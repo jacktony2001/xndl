@@ -2,9 +2,8 @@ name: Send New Posts to Telegram
 
 on:
   schedule:
-    # هر ۳ ساعت یکبار اجرا می‌شود (زمان UTC)
     - cron: '0 */3 * * *'
-  workflow_dispatch:  # این امکان را می‌دهد که به صورت دستی هم اجرا کنید
+  workflow_dispatch:
 
 jobs:
   send-posts:
@@ -21,19 +20,31 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore cache for sent links
+      - name: Install Chrome and ChromeDriver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip xvfb libxss1 libappindicator1 libindicator7
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i google-chrome-stable_current_amd64.deb || true
+          sudo apt-get -f install -y
+          wget -q https://storage.googleapis.com/chrome-for-testing-public/123.0.6312.86/linux64/chromedriver-linux64.zip
+          unzip -o chromedriver-linux64.zip
+          sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver
+          sudo chmod +x /usr/bin/chromedriver
+
+      - name: Restore cache
         uses: actions/cache@v4
         with:
           path: sent_links.json
           key: sent-links-v1
 
-      - name: Run the bot
+      - name: Run bot
         run: python bot.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-      - name: Save cache for sent links
+      - name: Save cache
         uses: actions/cache@v4
         with:
           path: sent_links.json
