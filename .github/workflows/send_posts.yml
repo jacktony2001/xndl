@@ -23,7 +23,7 @@ jobs:
       - name: Install Chrome and ChromeDriver
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip xvfb libxss1 libappindicator1 libindicator7
+          sudo apt-get install -y wget unzip xvfb libxss1 libappindicator3-1 libindicator7
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo dpkg -i google-chrome-stable_current_amd64.deb || true
           sudo apt-get -f install -y
@@ -31,6 +31,7 @@ jobs:
           unzip -o chromedriver-linux64.zip
           sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver
           sudo chmod +x /usr/bin/chromedriver
+          chromedriver --version
 
       - name: Restore cache
         uses: actions/cache@v4
