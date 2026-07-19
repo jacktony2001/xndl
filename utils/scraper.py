@@ -4,6 +4,8 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -19,13 +21,17 @@ class AznudeScraper:
         self.options.add_argument('--disable-gpu')
         self.options.add_argument('--window-size=1920,1080')
         self.options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        self.options.add_argument('--disable-blink-features=AutomationControlled')
+        self.options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        self.options.add_experimental_option('useAutomationExtension', False)
         self.driver = None
 
     def start(self):
-        # Use system chromedriver instead of webdriver-manager
         service = Service(executable_path='/usr/local/bin/chromedriver')
         self.driver = webdriver.Chrome(service=service, options=self.options)
         self.driver.set_page_load_timeout(30)
+        # Remove webdriver property
+        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
     def stop(self):
         if self.driver:
@@ -35,27 +41,52 @@ class AznudeScraper:
         self.start()
         try:
             self.driver.get(url)
-            time.sleep(3)
+            # Wait for the page to load
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            time.sleep(2)
 
-            items = self.driver.find_elements(By.CSS_SELECTOR, 'div.video-item, div.thumb-item, article, div[class*="video"], div[class*="thumb"]')
+            # Get all links with /view/celeb/ or /view/movie/
+            all_links = self.driver.find_elements(By.TAG_NAME, 'a')
             
             video_links = []
-            for item in items:
-                item_text = item.text.lower()
-                if 'ad' in item_text or 'sponsored' in item_text:
+            seen_urls = set()
+            
+            for link in all_links:
+                try:
+                    href = link.get_attribute('href')
+                    if not href:
+                        continue
+                    
+                    # Filter for video links
+                    if '/view/celeb/' in href or '/view/movie/' in href:
+                        if href in seen_urls:
+                            continue
+                        seen_urls.add(href)
+                        
+                        # Get title from link text or nearby element
+                        title = link.text.strip()
+                        if not title:
+                            # Try parent element
+                            parent = link.find_element(By.XPATH, '..')
+                            title = parent.text.strip() or 'Untitled'
+                        
+                        # Check for AD/Sponsored in the link's ancestors or siblings
+                        parent_text = self.driver.execute_script(
+                            "return arguments[0].closest('div, article, li')?.innerText || ''", 
+                            link
+                        )
+                        if 'ad' in parent_text.lower() or 'sponsored' in parent_text.lower():
+                            continue
+                        
+                        video_links.append({
+                            'url': href,
+                            'title': title[:100]  # Trim long titles
+                        })
+                        logger.info(f"Found video: {title[:50]}...")
+                except Exception as e:
                     continue
-
-                link_elem = item.find_element(By.TAG_NAME, 'a')
-                href = link_elem.get_attribute('href')
-                if not href:
-                    continue
-
-                if '/view/celeb/' in href or '/view/movie/' in href:
-                    title = link_elem.text.strip() or 'Untitled'
-                    video_links.append({
-                        'url': href,
-                        'title': title
-                    })
 
             logger.info(f"Found {len(video_links)} valid video links")
             return video_links
@@ -70,31 +101,54 @@ class AznudeScraper:
         self.start()
         try:
             self.driver.get(video_page_url)
-            time.sleep(3)
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            time.sleep(2)
 
-            video = self.driver.find_element(By.TAG_NAME, 'video')
-            sources = video.find_elements(By.TAG_NAME, 'source')
+            # Try multiple methods to find video
+            video_url = None
             
-            for source in sources:
-                src = source.get_attribute('src')
-                if src and not src.endswith('.mp4'):
-                    continue
-                if src:
-                    return src
+            # Method 1: video tag
+            try:
+                video = self.driver.find_element(By.TAG_NAME, 'video')
+                sources = video.find_elements(By.TAG_NAME, 'source')
+                for source in sources:
+                    src = source.get_attribute('src')
+                    if src:
+                        video_url = src
+                        break
+                if not video_url:
+                    video_url = video.get_attribute('src')
+            except:
+                pass
 
-            video_src = video.get_attribute('src')
-            if video_src:
-                return video_src
+            # Method 2: Look for video URLs in any src or data-* attributes
+            if not video_url:
+                elements = self.driver.find_elements(By.XPATH, "//*[@src]")
+                for elem in elements:
+                    src = elem.get_attribute('src')
+                    if src and any(ext in src for ext in ['.mp4', '.webm', '.m3u8']):
+                        video_url = src
+                        break
 
-            scripts = self.driver.find_elements(By.TAG_NAME, 'script')
-            for script in scripts:
-                content = script.get_attribute('innerHTML')
-                if content:
-                    matches = re.findall(r'https?://[^\s"\']+\.(?:mp4|webm|m3u8)', content)
-                    if matches:
-                        return matches[0]
+            # Method 3: Look in scripts
+            if not video_url:
+                scripts = self.driver.find_elements(By.TAG_NAME, 'script')
+                for script in scripts:
+                    content = script.get_attribute('innerHTML')
+                    if content:
+                        matches = re.findall(r'https?://[^\s"\']+\.(?:mp4|webm|m3u8)', content)
+                        if matches:
+                            video_url = matches[0]
+                            break
 
-            return None
+            if video_url:
+                logger.info(f"Extracted video URL: {video_url[:100]}...")
+            else:
+                logger.warning(f"No video found on {video_page_url}")
+
+            return video_url
 
         except Exception as e:
             logger.error(f"Error extracting video from {video_page_url}: {e}")
