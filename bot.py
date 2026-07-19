@@ -31,116 +31,109 @@ def save_sent_links(links):
     with open(SENT_FILE, 'w') as f:
         json.dump(list(links), f)
 
-def get_new_posts():
-    """استفاده از selenium با تنظیمات پیشرفته برای دور زدن تشخیص"""
-    print("راه‌اندازی مرورگر...")
+def get_media_from_page(page_url):
+    """
+    دریافت اولین فایل (ویدیو یا عکس) از صفحه یک مطلب
+    اولویت با ویدیو است، سپس عکس
+    """
+    print(f"  📄 در حال بررسی صفحه: {page_url}")
     
     chrome_options = Options()
-    
-    # تنظیمات اصلی headless
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-    
-    # تنظیمات برای دور زدن تشخیص ربات
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option('useAutomationExtension', False)
-    
-    # کاربر-عامل (User-Agent) واقعی
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
     
-    # تنظیمات زبان و منطقه
-    chrome_options.add_argument("--lang=en-US")
-    chrome_options.add_argument("--accept-lang=en-US,en;q=0.9")
+    service = Service('/usr/bin/chromedriver')
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    
+    try:
+        driver.get(page_url)
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        time.sleep(3)
+        
+        # 1. جستجوی ویدیو (اولویت اول)
+        try:
+            # پیدا کردن تگ ویدیو یا سورس آن
+            video_source = driver.find_element(By.XPATH, "//video/source | //video")
+            if video_source:
+                media_url = video_source.get_attribute('src')
+                if media_url and media_url.startswith('http'):
+                    driver.quit()
+                    return media_url, 'video'
+        except:
+            pass
+        
+        # 2. جستجوی عکس
+        try:
+            # پیدا کردن تصویر در بخش محتوای اصلی
+            img = driver.find_element(By.XPATH, "//div[contains(@class, 'video-container')]//img | //div[contains(@class, 'photo')]//img | //img[contains(@src, 'cdn.aznude.com')]")
+            if img:
+                img_url = img.get_attribute('src')
+                if img_url and img_url.startswith('http'):
+                    # اگر تصویر کوچک بود، سعی می‌کنیم نسخه بزرگتر را پیدا کنیم
+                    if 'thumb' in img_url:
+                        img_url = img_url.replace('thumb', 'large').replace('_t.', '.')
+                    driver.quit()
+                    return img_url, 'image'
+        except:
+            pass
+        
+        driver.quit()
+        return None, None
+        
+    except Exception as e:
+        print(f"  ❌ خطا در دریافت محتوا از {page_url}: {e}")
+        driver.quit()
+        return None, None
+
+def get_new_posts():
+    """دریافت لینک مطالب جدید از صفحه اصلی"""
+    print("🔍 شروع اسکرپینگ صفحه اصلی...")
+    
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
     
     try:
         service = Service('/usr/bin/chromedriver')
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        
-        # اجرای کد جاوااسکریپت برای مخفی کردن نشانه‌های ربات
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
-        print(f"بارگذاری صفحه {SITE_URL}...")
         driver.get(SITE_URL)
-        
-        # منتظر بارگذاری محتوا
-        wait = WebDriverWait(driver, 30)
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         time.sleep(5)
         
-        # اسکرول کردن برای بارگذاری محتوای داینامیک
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(3)
-        driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(2)
-        
-        # پیدا کردن ویدیوها
         new_posts = []
         
-        # جستجوی بخش "Videos Added on"
+        # پیدا کردن بخش "Videos Added on"
         try:
-            # پیدا کردن با متن
-            elements = driver.find_elements(By.XPATH, "//*[contains(text(), 'Videos Added on')]")
-            if elements:
-                parent = elements[0].find_element(By.XPATH, "..")
-                # پیدا کردن تمام لینک‌های ویدیو در این بخش
+            sections = driver.find_elements(By.XPATH, "//*[contains(text(), 'Videos Added on')]")
+            if sections:
+                parent = sections[0].find_element(By.XPATH, "..")
                 links = parent.find_elements(By.TAG_NAME, "a")
+                
                 for link in links:
                     try:
                         href = link.get_attribute('href')
-                        if href and ('/video/' in href or '/watch/' in href or '/view/' in href):
-                            title = link.text.strip() or "ویدیو جدید"
-                            img_url = None
-                            try:
-                                img = link.find_element(By.XPATH, ".//img")
-                                img_url = img.get_attribute('src')
-                            except:
-                                pass
-                            
+                        if href and ('/view/celeb/' in href or '/view/movie/' in href):
+                            title = link.text.strip() or "مطلب جدید"
                             new_posts.append({
                                 'title': title,
-                                'link': href,
-                                'image': img_url
+                                'link': href
                             })
                     except:
                         pass
         except Exception as e:
-            print(f"خطا در روش 1: {e}")
-        
-        # روش دوم: جستجوی مستقیم لینک‌های ویدیو
-        if len(new_posts) < 5:
-            try:
-                all_links = driver.find_elements(By.TAG_NAME, "a")
-                for link in all_links:
-                    try:
-                        href = link.get_attribute('href')
-                        if href and ('/video/' in href or '/watch/' in href):
-                            title = link.text.strip() or "ویدیو جدید"
-                            img_url = None
-                            try:
-                                img = link.find_element(By.XPATH, "..//img")
-                                img_url = img.get_attribute('src')
-                            except:
-                                pass
-                            
-                            # جلوگیری از تکراری
-                            if not any(p['link'] == href for p in new_posts):
-                                new_posts.append({
-                                    'title': title,
-                                    'link': href,
-                                    'image': img_url
-                                })
-                    except:
-                        pass
-            except Exception as e:
-                print(f"خطا در روش 2: {e}")
+            print(f"  ❌ خطا در پیدا کردن مطالب: {e}")
         
         driver.quit()
-        
-        print(f"{len(new_posts)} ویدیو پیدا شد.")
         
         # حذف تکراری‌ها
         unique_posts = []
@@ -150,59 +143,102 @@ def get_new_posts():
                 seen.add(post['link'])
                 unique_posts.append(post)
         
+        print(f"  ✅ {len(unique_posts)} مطلب جدید پیدا شد.")
         return unique_posts[:10]
         
     except Exception as e:
-        print(f"خطا: {e}")
+        print(f"  ❌ خطا در راه‌اندازی: {e}")
         return []
 
-def send_to_telegram(post):
+def send_media_to_telegram(post, media_url, media_type):
+    """ارسال فایل (عکس یا ویدیو) به تلگرام"""
     caption = f"{post['title']}\n{post['link']}"
     
-    if post.get('image') and post['image'] and post['image'].startswith('http'):
-        try:
-            img_data = requests.get(post['image'], timeout=10)
-            if img_data.status_code == 200:
-                response = requests.post(
-                    f"{TELEGRAM_API_URL}/sendPhoto",
-                    data={'chat_id': CHAT_ID, 'caption': caption},
-                    files={'photo': ('image.jpg', img_data.content, 'image/jpeg')}
-                )
-                if response.ok:
-                    return
-        except Exception as e:
-            print(f"خطا در ارسال عکس: {e}")
-    
     try:
+        # دانلود فایل
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(media_url, headers=headers, timeout=30)
+        if response.status_code != 200:
+            return False
+        
+        file_content = response.content
+        file_name = f"{post['title']}.{media_type == 'video' and 'mp4' or 'jpg'}"
+        
+        # انتخاب روش ارسال بر اساس نوع فایل
+        if media_type == 'video':
+            send_url = f"{TELEGRAM_API_URL}/sendVideo"
+        else:
+            send_url = f"{TELEGRAM_API_URL}/sendPhoto"
+        
+        files = {
+            media_type: (file_name, file_content)
+        }
+        data = {'chat_id': CHAT_ID, 'caption': caption}
+        
+        result = requests.post(send_url, data=data, files=files, timeout=60)
+        if result.ok:
+            return True
+        else:
+            print(f"  ⚠️ خطا در ارسال به تلگرام: {result.text}")
+            return False
+            
+    except Exception as e:
+        print(f"  ❌ خطا در دانلود یا ارسال: {e}")
+        return False
+
+def send_to_telegram(post):
+    """ارسال مطلب با فایل (عکس یا ویدیو) به تلگرام"""
+    print(f"  📤 در حال ارسال: {post['title']}")
+    
+    # دریافت فایل از صفحه مطلب
+    media_url, media_type = get_media_from_page(post['link'])
+    
+    if media_url:
+        success = send_media_to_telegram(post, media_url, media_type)
+        if success:
+            print(f"  ✅ ارسال {media_type} برای {post['title']} موفق بود.")
+            return
+        else:
+            print(f"  ⚠️ ارسال فایل برای {post['title']} ناموفق بود.")
+    
+    # در صورت شکست، فقط متن ارسال می‌شود
+    try:
+        caption = f"{post['title']}\n{post['link']}"
         requests.post(
             f"{TELEGRAM_API_URL}/sendMessage",
             data={'chat_id': CHAT_ID, 'text': caption}
         )
+        print(f"  📝 ارسال متن برای {post['title']} انجام شد.")
     except Exception as e:
-        print(f"خطا در ارسال متن: {e}")
+        print(f"  ❌ خطا در ارسال متن: {e}")
 
 def main():
-    print("شروع اسکرپینگ...")
+    print("🚀 شروع اسکرپینگ...")
     sent_links = load_sent_links()
     all_posts = get_new_posts()
     
     if not all_posts:
-        print("هیچ پستی پیدا نشد.")
+        print("❌ هیچ مطلبی پیدا نشد.")
         return
 
     posts_to_send = [p for p in all_posts if p['link'] not in sent_links]
-    print(f"{len(posts_to_send)} پست جدید برای ارسال پیدا شد.")
+    print(f"  📨 {len(posts_to_send)} مطلب جدید برای ارسال پیدا شد.")
+    
+    if not posts_to_send:
+        print("✅ همه مطالب قبلاً ارسال شده‌اند.")
+        return
 
-    for post in posts_to_send[:10]:
+    for i, post in enumerate(posts_to_send[:10]):
+        print(f"\n--- ارسال {i+1} از {len(posts_to_send[:10])} ---")
         try:
             send_to_telegram(post)
             sent_links.add(post['link'])
-            time.sleep(2)
+            time.sleep(5)  # تاخیر ۵ ثانیه‌ای
         except Exception as e:
-            print(f"خطا در ارسال: {e}")
+            print(f"  ❌ خطا در ارسال: {e}")
 
     save_sent_links(sent_links)
-    print("پایان کار.")
+    print("\n✅ پایان کار.")
 
 if __name__ == "__main__":
     main()
