@@ -34,9 +34,46 @@ def save_sent_links(links):
     with open(SENT_FILE, 'w') as f:
         json.dump(list(links), f)
 
+def get_cookies_from_page(page_url):
+    """دریافت کوکی‌های معتبر با استفاده از Selenium"""
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
+    
+    service = Service('/usr/bin/chromedriver')
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    
+    try:
+        driver.get(page_url)
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        time.sleep(5)
+        
+        # دریافت کوکی‌ها
+        cookies = driver.get_cookies()
+        driver.quit()
+        
+        # تبدیل به فرمت مناسب برای yt-dlp
+        cookie_string = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+        return cookie_string
+        
+    except Exception as e:
+        print(f"  ❌ خطا در دریافت کوکی: {e}")
+        driver.quit()
+        return None
+
 def get_direct_video_url_with_ytdlp(page_url):
-    """استخراج لینک مستقیم ویدیو با استفاده از yt-dlp"""
+    """استخراج لینک مستقیم ویدیو با استفاده از yt-dlp و کوکی"""
     print(f"  📄 استخراج ویدیو از: {page_url}")
+    
+    # اول کوکی بگیر
+    cookies = get_cookies_from_page(page_url)
+    if not cookies:
+        print("  ⚠️ کوکی دریافت نشد")
+        return None
     
     try:
         ydl_opts = {
@@ -44,6 +81,11 @@ def get_direct_video_url_with_ytdlp(page_url):
             'no_warnings': True,
             'extract_flat': True,
             'force_generic_extractor': True,
+            'cookiefile': None,  # استفاده از کوکی مستقیم
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+                'Cookie': cookies
+            }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -53,7 +95,6 @@ def get_direct_video_url_with_ytdlp(page_url):
                 print(f"  ✅ ویدیو اصلی پیدا شد: {video_url}")
                 return video_url
             elif info and 'formats' in info and len(info['formats']) > 0:
-                # بهترین کیفیت رو انتخاب کن
                 best_format = max(info['formats'], key=lambda f: f.get('height', 0) or 0)
                 video_url = best_format.get('url')
                 if video_url:
@@ -90,7 +131,6 @@ def get_new_posts():
         
         new_posts = []
         
-        # پیدا کردن لینک‌های مطالب
         links = driver.find_elements(By.XPATH, "//a[contains(@href, '/view/celeb/') or contains(@href, '/view/movie/')]")
         
         for link in links[:15]:
@@ -119,7 +159,6 @@ def send_video_to_telegram(post, video_url):
     caption = f"{post['title']}\n{post['link']}"
     
     try:
-        # دانلود ویدیو
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(video_url, headers=headers, timeout=60)
         if response.status_code != 200:
@@ -151,7 +190,6 @@ def send_to_telegram(post):
             print(f"  ✅ ویدیو ارسال شد")
             return
     
-    # در صورت شکست، فقط متن
     try:
         caption = f"{post['title']}\n{post['link']}"
         requests.post(
