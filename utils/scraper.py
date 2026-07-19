@@ -37,6 +37,47 @@ class AznudeScraper:
             self.driver.quit()
             self.driver = None
 
+    def _is_valid_video_url(self, url):
+        """Check if URL is a valid main video (not an ad)"""
+        if not url:
+            return False
+        
+        # Must be video format
+        if not any(ext in url.lower() for ext in ['.mp4', '.webm', '.m3u8']):
+            return False
+        
+        # Skip ad URLs
+        ad_patterns = [
+            'ad',
+            'ads',
+            'sponsored',
+            'promo',
+            'preroll',
+            'postroll',
+            'adserver',
+            'adservice',
+            'doubleclick',
+            'googleads',
+            'adnxs',
+            'advertisement',
+            'pre-roll',
+            'banner'
+        ]
+        
+        url_lower = url.lower()
+        for pattern in ad_patterns:
+            if pattern in url_lower:
+                logger.debug(f"Skipping ad URL: {url}")
+                return False
+        
+        # Prefer URLs from main CDN
+        if 'bkcdn.net' in url_lower:
+            return True
+        
+        # Allow other CDNs but log them
+        logger.debug(f"Non-standard CDN: {url}")
+        return True
+
     def get_new_videos(self, url):
         self.start()
         try:
@@ -109,28 +150,55 @@ class AznudeScraper:
 
             video_url = None
             
-            # Method 1: video tag
+            # Method 1: video tag - filter ads
             try:
-                video = self.driver.find_element(By.TAG_NAME, 'video')
-                sources = video.find_elements(By.TAG_NAME, 'source')
-                for source in sources:
-                    src = source.get_attribute('src')
-                    if src and any(ext in src for ext in ['.mp4', '.webm', '.m3u8']):
-                        video_url = src
+                videos = self.driver.find_elements(By.TAG_NAME, 'video')
+                for video in videos:
+                    # Check if this video is in an ad container
+                    try:
+                        parent_classes = self.driver.execute_script(
+                            "return arguments[0].closest('div, article, section')?.className || ''", 
+                            video
+                        )
+                        if 'ad' in parent_classes.lower() or 'sponsored' in parent_classes.lower():
+                            continue
+                    except:
+                        pass
+                    
+                    sources = video.find_elements(By.TAG_NAME, 'source')
+                    for source in sources:
+                        src = source.get_attribute('src')
+                        if src and self._is_valid_video_url(src):
+                            video_url = src
+                            break
+                    if not video_url:
+                        src = video.get_attribute('src')
+                        if src and self._is_valid_video_url(src):
+                            video_url = src
+                    if video_url:
                         break
-                if not video_url:
-                    video_url = video.get_attribute('src')
             except:
                 pass
 
-            # Method 2: src/data attributes
+            # Method 2: src/data attributes with ad filtering
             if not video_url:
                 elements = self.driver.find_elements(By.XPATH, "//*[@src or @data-src or @data-video]")
                 for elem in elements:
+                    # Skip if element is in ad container
+                    try:
+                        parent_classes = self.driver.execute_script(
+                            "return arguments[0].closest('div, article, section')?.className || ''", 
+                            elem
+                        )
+                        if 'ad' in parent_classes.lower() or 'sponsored' in parent_classes.lower():
+                            continue
+                    except:
+                        pass
+                    
                     for attr in ['src', 'data-src', 'data-video', 'data-url']:
                         try:
                             src = elem.get_attribute(attr)
-                            if src and any(ext in src for ext in ['.mp4', '.webm', '.m3u8']):
+                            if src and self._is_valid_video_url(src):
                                 video_url = src
                                 break
                         except:
@@ -138,27 +206,33 @@ class AznudeScraper:
                     if video_url:
                         break
 
-            # Method 3: scripts
+            # Method 3: scripts - filter ads
             if not video_url:
                 scripts = self.driver.find_elements(By.TAG_NAME, 'script')
                 for script in scripts:
                     content = script.get_attribute('innerHTML')
                     if content:
                         matches = re.findall(r'https?://[^\s"\']+\.(?:mp4|webm|m3u8)', content)
-                        if matches:
-                            video_url = matches[0]
-                            break
+                        for match in matches:
+                            if self._is_valid_video_url(match):
+                                video_url = match
+                                break
+                    if video_url:
+                        break
 
-            # Method 4: JS objects
+            # Method 4: JS objects - filter ads
             if not video_url:
                 scripts = self.driver.find_elements(By.TAG_NAME, 'script')
                 for script in scripts:
                     content = script.get_attribute('innerHTML')
                     if content:
                         matches = re.findall(r'["\'](https?://[^"\']+\.(?:mp4|webm|m3u8))["\']', content)
-                        if matches:
-                            video_url = matches[0]
-                            break
+                        for match in matches:
+                            if self._is_valid_video_url(match):
+                                video_url = match
+                                break
+                    if video_url:
+                        break
 
             # Method 5: iframes
             if not video_url:
@@ -171,7 +245,7 @@ class AznudeScraper:
                             time.sleep(1)
                             video = self.driver.find_element(By.TAG_NAME, 'video')
                             src = video.get_attribute('src')
-                            if src:
+                            if src and self._is_valid_video_url(src):
                                 video_url = src
                                 break
                         except:
@@ -182,7 +256,7 @@ class AznudeScraper:
             if video_url:
                 logger.info(f"Extracted video URL: {video_url[:100]}...")
             else:
-                logger.warning(f"No video found on {video_page_url}")
+                logger.warning(f"No valid video found on {video_page_url}")
 
             return video_url
 
