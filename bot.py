@@ -23,19 +23,25 @@ SENT_FILE = "sent_links.json"
 def load_sent_links():
     try:
         with open(SENT_FILE, 'r') as f:
-            return set(json.load(f))
+            data = json.load(f)
+            return set(data)
     except FileNotFoundError:
+        print("  ℹ️ فایل sent_links.json پیدا نشد، یک مجموعه خالی ایجاد می‌شود.")
+        return set()
+    except json.JSONDecodeError:
+        print("  ⚠️ فایل sent_links.json خراب است، یک مجموعه خالی ایجاد می‌شود.")
         return set()
 
 def save_sent_links(links):
-    with open(SENT_FILE, 'w') as f:
-        json.dump(list(links), f)
+    try:
+        with open(SENT_FILE, 'w') as f:
+            json.dump(list(links), f)
+        print(f"  💾 {len(links)} لینک در فایل sent_links.json ذخیره شد.")
+    except Exception as e:
+        print(f"  ❌ خطا در ذخیره فایل: {e}")
 
 def get_media_from_page(page_url):
-    """
-    دریافت اولین فایل (ویدیو یا عکس) از صفحه یک مطلب
-    اولویت با ویدیو است، سپس عکس
-    """
+    """دریافت اولین فایل (ویدیو یا عکس) از صفحه یک مطلب"""
     print(f"  📄 در حال بررسی صفحه: {page_url}")
     
     chrome_options = Options()
@@ -54,9 +60,8 @@ def get_media_from_page(page_url):
         WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         time.sleep(3)
         
-        # 1. جستجوی ویدیو (اولویت اول)
+        # 1. جستجوی ویدیو
         try:
-            # پیدا کردن تگ ویدیو یا سورس آن
             video_source = driver.find_element(By.XPATH, "//video/source | //video")
             if video_source:
                 media_url = video_source.get_attribute('src')
@@ -68,12 +73,10 @@ def get_media_from_page(page_url):
         
         # 2. جستجوی عکس
         try:
-            # پیدا کردن تصویر در بخش محتوای اصلی
             img = driver.find_element(By.XPATH, "//div[contains(@class, 'video-container')]//img | //div[contains(@class, 'photo')]//img | //img[contains(@src, 'cdn.aznude.com')]")
             if img:
                 img_url = img.get_attribute('src')
                 if img_url and img_url.startswith('http'):
-                    # اگر تصویر کوچک بود، سعی می‌کنیم نسخه بزرگتر را پیدا کنیم
                     if 'thumb' in img_url:
                         img_url = img_url.replace('thumb', 'large').replace('_t.', '.')
                     driver.quit()
@@ -128,10 +131,32 @@ def get_new_posts():
                                 'title': title,
                                 'link': href
                             })
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f"  ⚠️ خطا در پردازش لینک: {e}")
+            else:
+                print("  ⚠️ بخش 'Videos Added on' پیدا نشد.")
         except Exception as e:
             print(f"  ❌ خطا در پیدا کردن مطالب: {e}")
+        
+        # اگر روش اول موفق نشد، روش دوم را امتحان کن
+        if not new_posts:
+            print("  🔄 تلاش با روش دوم (جستجوی مستقیم)...")
+            try:
+                # پیدا کردن تمام لینک‌های مطالب
+                all_links = driver.find_elements(By.XPATH, "//a[contains(@href, '/view/celeb/') or contains(@href, '/view/movie/')]")
+                for link in all_links[:15]:
+                    try:
+                        href = link.get_attribute('href')
+                        title = link.text.strip() or "مطلب جدید"
+                        if href:
+                            new_posts.append({
+                                'title': title,
+                                'link': href
+                            })
+                    except:
+                        pass
+            except Exception as e:
+                print(f"  ❌ خطا در روش دوم: {e}")
         
         driver.quit()
         
@@ -147,7 +172,7 @@ def get_new_posts():
         return unique_posts[:10]
         
     except Exception as e:
-        print(f"  ❌ خطا در راه‌اندازی: {e}")
+        print(f"  ❌ خطا در راه‌اندازی مرورگر: {e}")
         return []
 
 def send_media_to_telegram(post, media_url, media_type):
@@ -155,7 +180,6 @@ def send_media_to_telegram(post, media_url, media_type):
     caption = f"{post['title']}\n{post['link']}"
     
     try:
-        # دانلود فایل
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(media_url, headers=headers, timeout=30)
         if response.status_code != 200:
@@ -164,7 +188,6 @@ def send_media_to_telegram(post, media_url, media_type):
         file_content = response.content
         file_name = f"{post['title']}.{media_type == 'video' and 'mp4' or 'jpg'}"
         
-        # انتخاب روش ارسال بر اساس نوع فایل
         if media_type == 'video':
             send_url = f"{TELEGRAM_API_URL}/sendVideo"
         else:
@@ -190,7 +213,6 @@ def send_to_telegram(post):
     """ارسال مطلب با فایل (عکس یا ویدیو) به تلگرام"""
     print(f"  📤 در حال ارسال: {post['title']}")
     
-    # دریافت فایل از صفحه مطلب
     media_url, media_type = get_media_from_page(post['link'])
     
     if media_url:
@@ -215,6 +237,8 @@ def send_to_telegram(post):
 def main():
     print("🚀 شروع اسکرپینگ...")
     sent_links = load_sent_links()
+    print(f"  📋 {len(sent_links)} لینک قبلاً ارسال شده است.")
+    
     all_posts = get_new_posts()
     
     if not all_posts:
@@ -233,7 +257,7 @@ def main():
         try:
             send_to_telegram(post)
             sent_links.add(post['link'])
-            time.sleep(5)  # تاخیر ۵ ثانیه‌ای
+            time.sleep(5)
         except Exception as e:
             print(f"  ❌ خطا در ارسال: {e}")
 
