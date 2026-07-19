@@ -11,7 +11,6 @@ import time
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Simple state tracking (for GitHub Actions, we store last sent in a file)
 STATE_FILE = 'last_sent.txt'
 
 def get_last_sent():
@@ -25,22 +24,21 @@ def set_last_sent(url):
         f.write(url)
 
 async def send_video(bot, chat_id, video_url, title, page_url):
-    """Send video to Telegram"""
     try:
-        # Download video first (Telegram needs file)
-        response = requests.get(video_url, stream=True, timeout=60)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(video_url, stream=True, timeout=60, headers=headers)
         if response.status_code != 200:
-            logger.error(f"Failed to download video: {video_url}")
+            logger.error(f"Failed to download video: {video_url} (status: {response.status_code})")
             return False
 
-        # Generate temp filename
         filename = f"temp_{int(time.time())}.mp4"
         with open(filename, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
 
-        # Send video with caption
         caption = f"🎬 {title}\n🔗 {page_url}"
         with open(filename, 'rb') as f:
             await bot.send_video(
@@ -50,7 +48,6 @@ async def send_video(bot, chat_id, video_url, title, page_url):
                 supports_streaming=True
             )
 
-        # Clean up
         os.remove(filename)
         logger.info(f"Sent video: {title}")
         return True
@@ -62,17 +59,16 @@ async def send_video(bot, chat_id, video_url, title, page_url):
 async def main():
     logger.info("Starting aznude bot...")
 
-    # Initialize bot
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     scraper = AznudeScraper(headless=True)
 
     # Get recent videos
     videos = scraper.get_new_videos(START_PAGE)
+    
     if not videos:
-        logger.info("No videos found")
+        logger.info("No videos found - check selectors or site structure")
         return
 
-    # Check last sent
     last_sent = get_last_sent()
     new_videos = []
 
@@ -81,7 +77,6 @@ async def main():
             break
         new_videos.append(video)
 
-    # Reverse to send in correct order (oldest first)
     new_videos.reverse()
 
     if not new_videos:
@@ -90,15 +85,12 @@ async def main():
 
     logger.info(f"Sending {len(new_videos)} new videos")
 
-    # For each new video, extract and send
     for video in new_videos:
-        # Extract direct video URL
         video_url = scraper.extract_video_url(video['url'])
         if not video_url:
             logger.warning(f"Could not extract video from {video['url']}")
             continue
 
-        # Send to Telegram
         success = await send_video(
             bot,
             TELEGRAM_CHAT_ID,
@@ -108,10 +100,8 @@ async def main():
         )
 
         if success:
-            # Update last sent
             set_last_sent(video['url'])
 
-        # Be nice to Telegram API rate limits
         await asyncio.sleep(1)
 
     logger.info("Done!")
