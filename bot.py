@@ -2,7 +2,6 @@ import os
 import json
 import time
 import requests
-import yt_dlp
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -34,8 +33,10 @@ def save_sent_links(links):
     with open(SENT_FILE, 'w') as f:
         json.dump(list(links), f)
 
-def get_cookies_from_page(page_url):
-    """دریافت کوکی‌های معتبر با استفاده از Selenium"""
+def get_direct_video_url_with_selenium(page_url):
+    """دریافت لینک مستقیم ویدیو با Selenium (از تگ video)"""
+    print(f"  📄 دریافت ویدیو از: {page_url}")
+    
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
@@ -50,62 +51,34 @@ def get_cookies_from_page(page_url):
     try:
         driver.get(page_url)
         WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        
+        # اسکرول برای بارگذاری پخش‌کننده
+        driver.execute_script("window.scrollTo(0, 500);")
         time.sleep(5)
         
-        # دریافت کوکی‌ها
-        cookies = driver.get_cookies()
-        driver.quit()
+        # پیدا کردن تگ video
+        video = driver.find_element(By.TAG_NAME, "video")
+        video_url = video.get_attribute('src')
         
-        # تبدیل به فرمت مناسب برای yt-dlp
-        cookie_string = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-        return cookie_string
+        # اگر src خالی بود، تگ source رو چک کن
+        if not video_url or not video_url.startswith('http'):
+            source = driver.find_element(By.XPATH, "//video/source")
+            if source:
+                video_url = source.get_attribute('src')
         
-    except Exception as e:
-        print(f"  ❌ خطا در دریافت کوکی: {e}")
-        driver.quit()
-        return None
-
-def get_direct_video_url_with_ytdlp(page_url):
-    """استخراج لینک مستقیم ویدیو با استفاده از yt-dlp و کوکی"""
-    print(f"  📄 استخراج ویدیو از: {page_url}")
-    
-    # اول کوکی بگیر
-    cookies = get_cookies_from_page(page_url)
-    if not cookies:
-        print("  ⚠️ کوکی دریافت نشد")
-        return None
-    
-    try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': True,
-            'force_generic_extractor': True,
-            'cookiefile': None,  # استفاده از کوکی مستقیم
-            'headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-                'Cookie': cookies
-            }
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(page_url, download=False)
-            if info and 'url' in info:
-                video_url = info['url']
-                print(f"  ✅ ویدیو اصلی پیدا شد: {video_url}")
-                return video_url
-            elif info and 'formats' in info and len(info['formats']) > 0:
-                best_format = max(info['formats'], key=lambda f: f.get('height', 0) or 0)
-                video_url = best_format.get('url')
-                if video_url:
-                    print(f"  ✅ ویدیو اصلی پیدا شد: {video_url}")
-                    return video_url
-        
-        print(f"  ⚠️ ویدیویی با yt-dlp پیدا نشد")
-        return None
+        # چک کردن اینکه لینک تبلیغاتی نباشه
+        if video_url and video_url.startswith('http') and 'cdn' in video_url:
+            print(f"  ✅ ویدیو اصلی پیدا شد: {video_url}")
+            driver.quit()
+            return video_url
+        else:
+            print(f"  ⚠️ ویدیو معتبر پیدا نشد")
+            driver.quit()
+            return None
         
     except Exception as e:
-        print(f"  ❌ خطا در yt-dlp: {e}")
+        print(f"  ❌ خطا: {e}")
+        driver.quit()
         return None
 
 def get_new_posts():
@@ -183,7 +156,7 @@ def send_to_telegram(post):
     """ارسال مطلب با ویدیو"""
     print(f"  📤 ارسال: {post['title']}")
     
-    video_url = get_direct_video_url_with_ytdlp(post['link'])
+    video_url = get_direct_video_url_with_selenium(post['link'])
     
     if video_url:
         if send_video_to_telegram(post, video_url):
