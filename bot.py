@@ -82,7 +82,7 @@ def get_direct_video_url_with_selenium(page_url):
         return None
 
 def get_new_posts():
-    """دریافت لینک مطالب جدید از صفحه مشخص"""
+    """دریافت لینک مطالب جدید از صفحه مشخص (فقط لینک‌های اصلی)"""
     print(f"🔍 اسکرپینگ از: {TARGET_URL}")
     
     chrome_options = Options()
@@ -104,13 +104,16 @@ def get_new_posts():
         
         new_posts = []
         
+        # 🔴 تغییر اصلی: فقط لینک‌هایی که به /view/celeb/ یا /view/movie/ ختم میشن
         links = driver.find_elements(By.XPATH, "//a[contains(@href, '/view/celeb/') or contains(@href, '/view/movie/')]")
         
-        for link in links[:15]:
+        for link in links[:20]:  # بیشتر میگیریم تا مطمئن باشیم ۱۰ تا پر میشه
             try:
                 href = link.get_attribute('href')
                 title = link.text.strip() or "مطلب جدید"
-                if href and not any(p['link'] == href for p in new_posts):
+                
+                # 🔴 فیلتر: فقط لینک‌هایی که به /azncdn/ ختم نمیشن (تبلیغات نیستن)
+                if href and '/azncdn/' not in href and not any(p['link'] == href for p in new_posts):
                     new_posts.append({
                         'title': title,
                         'link': href
@@ -120,7 +123,7 @@ def get_new_posts():
         
         driver.quit()
         
-        print(f"  ✅ {len(new_posts)} مطلب پیدا شد.")
+        print(f"  ✅ {len(new_posts)} مطلب اصلی پیدا شد.")
         return new_posts[:10]
         
     except Exception as e:
