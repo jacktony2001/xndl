@@ -7,8 +7,6 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.service import Service
 
 # --- تنظیمات برگرفته از Secrets گیت‌هاب ---
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -33,43 +31,50 @@ def save_sent_links(links):
         json.dump(list(links), f)
 
 def get_new_posts():
-    """استفاده از selenium برای بارگذاری کامل صفحه و استخراج محتوا"""
+    """استفاده از selenium با کروم دایرکت"""
     print("راه‌اندازی مرورگر...")
     
-    # تنظیمات مرورگر بدون رابط کاربری (headless)
+    # تنظیمات مرورگر بدون رابط کاربری
     chrome_options = Options()
-    chrome_options.add_argument("--headless")  # اجرا بدون نمایش مرورگر
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
     try:
+        # نصب کروم و کروم‌درایور با استفاده از ابزارهای گیت‌هاب
+        os.system('wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb')
+        os.system('sudo dpkg -i google-chrome-stable_current_amd64.deb || true')
+        os.system('sudo apt-get -f install -y')
+        os.system('wget -q https://storage.googleapis.com/chrome-for-testing-public/123.0.6312.86/linux64/chromedriver-linux64.zip')
+        os.system('unzip -o chromedriver-linux64.zip')
+        os.system('sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver')
+        os.system('sudo chmod +x /usr/bin/chromedriver')
+        
         # راه‌اندازی مرورگر
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver = webdriver.Chrome(options=chrome_options)
         
         print(f"بارگذاری صفحه {SITE_URL}...")
         driver.get(SITE_URL)
         
-        # منتظر بارگذاری محتوای اصلی
-        wait = WebDriverWait(driver, 20)
+        # منتظر بارگذاری محتوا
+        wait = WebDriverWait(driver, 30)
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        
-        # صبر بیشتر برای بارگذاری کامل محتوا (مخصوصاً محتوای داینامیک)
         time.sleep(5)
         
-        # پیدا کردن بخش ویدیوهای جدید
+        # پیدا کردن ویدیوها
         new_posts = []
         
         # روش 1: پیدا کردن بخش "Videos Added on"
         try:
-            # پیدا کردن هدر بخش
             sections = driver.find_elements(By.XPATH, "//*[contains(text(), 'Videos Added on')]")
             if sections:
                 parent = sections[0].find_element(By.XPATH, "..")
-                # پیدا کردن آیتم‌های ویدیو
                 video_items = parent.find_elements(By.XPATH, ".//a[contains(@href, '/video/') or contains(@href, '/watch/')]")
                 
                 for item in video_items[:15]:
@@ -77,9 +82,12 @@ def get_new_posts():
                         link = item.get_attribute('href')
                         title = item.text.strip() or "ویدیو جدید"
                         
-                        # پیدا کردن تصویر نزدیک
-                        img = item.find_element(By.XPATH, ".//img | ../img")
-                        img_url = img.get_attribute('src') if img else None
+                        # پیدا کردن تصویر
+                        try:
+                            img = item.find_element(By.XPATH, ".//img | ../img")
+                            img_url = img.get_attribute('src') if img else None
+                        except:
+                            img_url = None
                         
                         new_posts.append({
                             'title': title,
@@ -87,28 +95,31 @@ def get_new_posts():
                             'image': img_url
                         })
                     except Exception as e:
-                        print(f"خطا در استخراج یک آیتم: {e}")
+                        print(f"خطا در استخراج آیتم: {e}")
         except Exception as e:
             print(f"خطا در روش 1: {e}")
         
-        # روش 2: اگر روش اول موفق نشد، تمام لینک‌های ویدیو را پیدا کن
+        # روش 2: اگر روش اول موفق نشد، همه لینک‌ها را بررسی کن
         if not new_posts:
             try:
-                all_video_links = driver.find_elements(By.XPATH, "//a[contains(@href, '/video/') or contains(@href, '/watch/')]")
-                for link in all_video_links[:15]:
+                all_links = driver.find_elements(By.TAG_NAME, "a")
+                for link in all_links[:30]:
                     try:
-                        url = link.get_attribute('href')
-                        title = link.text.strip() or "ویدیو جدید"
-                        
-                        # پیدا کردن تصویر
-                        img = link.find_element(By.XPATH, "ancestor::*//img | preceding::img")
-                        img_url = img.get_attribute('src') if img else None
-                        
-                        new_posts.append({
-                            'title': title,
-                            'link': url,
-                            'image': img_url
-                        })
+                        href = link.get_attribute('href')
+                        if href and ('/video/' in href or '/watch/' in href):
+                            title = link.text.strip() or "ویدیو جدید"
+                            img_url = None
+                            try:
+                                img = link.find_element(By.XPATH, "..//img")
+                                img_url = img.get_attribute('src') if img else None
+                            except:
+                                pass
+                            
+                            new_posts.append({
+                                'title': title,
+                                'link': href,
+                                'image': img_url
+                            })
                     except:
                         pass
             except Exception as e:
@@ -116,7 +127,7 @@ def get_new_posts():
         
         driver.quit()
         
-        # حذف آیتم‌های تکراری
+        # حذف تکراری‌ها
         unique_posts = []
         seen = set()
         for post in new_posts:
@@ -128,33 +139,37 @@ def get_new_posts():
         return unique_posts[:10]
         
     except Exception as e:
-        print(f"خطا در راه‌اندازی مرورگر: {e}")
+        print(f"خطا: {e}")
         return []
 
 def send_to_telegram(post):
-    """ارسال پست به تلگرام"""
     caption = f"{post['title']}\n{post['link']}"
     
-    if post.get('image') and post['image'].startswith('http'):
+    if post.get('image') and post['image'] and post['image'].startswith('http'):
         try:
-            response = requests.post(
-                f"{TELEGRAM_API_URL}/sendPhoto",
-                data={'chat_id': CHAT_ID, 'caption': caption},
-                files={'photo': requests.get(post['image']).content}
-            )
-            if response.ok:
-                return
+            img_data = requests.get(post['image'], timeout=10)
+            if img_data.status_code == 200:
+                response = requests.post(
+                    f"{TELEGRAM_API_URL}/sendPhoto",
+                    data={'chat_id': CHAT_ID, 'caption': caption},
+                    files={'photo': ('image.jpg', img_data.content, 'image/jpeg')}
+                )
+                if response.ok:
+                    return
         except Exception as e:
             print(f"خطا در ارسال عکس: {e}")
     
-    # ارسال به صورت متن
-    requests.post(
-        f"{TELEGRAM_API_URL}/sendMessage",
-        data={'chat_id': CHAT_ID, 'text': caption}
-    )
+    # ارسال متن
+    try:
+        requests.post(
+            f"{TELEGRAM_API_URL}/sendMessage",
+            data={'chat_id': CHAT_ID, 'text': caption}
+        )
+    except Exception as e:
+        print(f"خطا در ارسال متن: {e}")
 
 def main():
-    print("شروع اسکرپینگ با Selenium...")
+    print("شروع اسکرپینگ...")
     sent_links = load_sent_links()
     all_posts = get_new_posts()
     
