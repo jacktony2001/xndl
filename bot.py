@@ -1,9 +1,14 @@
 import os
 import json
+import time
 import requests
-from bs4 import BeautifulSoup
-from time import sleep
-import random
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service
 
 # --- تنظیمات برگرفته از Secrets گیت‌هاب ---
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -28,179 +33,128 @@ def save_sent_links(links):
         json.dump(list(links), f)
 
 def get_new_posts():
-    """سایت را با هدرهای کامل و کوکی شبیه‌سازی شده اسکرپ می‌کند."""
+    """استفاده از selenium برای بارگذاری کامل صفحه و استخراج محتوا"""
+    print("راه‌اندازی مرورگر...")
     
-    # هدرهای کامل یک مرورگر واقعی
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': 'en-US,en;q=0.9,fa;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
-        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-    }
-    
-    # کوکی‌های اولیه برای شبیه‌سازی یک بازدیدکننده واقعی
-    cookies = {
-        'aznude_session': '1',  # کوکی فرضی برای نشست
-        'visitor_id': str(random.randint(1000000, 9999999)),
-        'device_type': 'desktop',
-        'theme': 'dark'  # یا 'light'
-    }
-    
-    session = requests.Session()
-    
-    # ابتدا یک درخواست مقدماتی برای دریافت کوکی‌های اولیه
-    try:
-        session.get(SITE_URL, headers=headers, timeout=15)
-    except:
-        pass
+    # تنظیمات مرورگر بدون رابط کاربری (headless)
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")  # اجرا بدون نمایش مرورگر
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
     try:
-        response = session.get(SITE_URL, headers=headers, cookies=cookies, timeout=20)
-        response.raise_for_status()
+        # راه‌اندازی مرورگر
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        print(f"بارگذاری صفحه {SITE_URL}...")
+        driver.get(SITE_URL)
+        
+        # منتظر بارگذاری محتوای اصلی
+        wait = WebDriverWait(driver, 20)
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        
+        # صبر بیشتر برای بارگذاری کامل محتوا (مخصوصاً محتوای داینامیک)
+        time.sleep(5)
+        
+        # پیدا کردن بخش ویدیوهای جدید
+        new_posts = []
+        
+        # روش 1: پیدا کردن بخش "Videos Added on"
+        try:
+            # پیدا کردن هدر بخش
+            sections = driver.find_elements(By.XPATH, "//*[contains(text(), 'Videos Added on')]")
+            if sections:
+                parent = sections[0].find_element(By.XPATH, "..")
+                # پیدا کردن آیتم‌های ویدیو
+                video_items = parent.find_elements(By.XPATH, ".//a[contains(@href, '/video/') or contains(@href, '/watch/')]")
+                
+                for item in video_items[:15]:
+                    try:
+                        link = item.get_attribute('href')
+                        title = item.text.strip() or "ویدیو جدید"
+                        
+                        # پیدا کردن تصویر نزدیک
+                        img = item.find_element(By.XPATH, ".//img | ../img")
+                        img_url = img.get_attribute('src') if img else None
+                        
+                        new_posts.append({
+                            'title': title,
+                            'link': link,
+                            'image': img_url
+                        })
+                    except Exception as e:
+                        print(f"خطا در استخراج یک آیتم: {e}")
+        except Exception as e:
+            print(f"خطا در روش 1: {e}")
+        
+        # روش 2: اگر روش اول موفق نشد، تمام لینک‌های ویدیو را پیدا کن
+        if not new_posts:
+            try:
+                all_video_links = driver.find_elements(By.XPATH, "//a[contains(@href, '/video/') or contains(@href, '/watch/')]")
+                for link in all_video_links[:15]:
+                    try:
+                        url = link.get_attribute('href')
+                        title = link.text.strip() or "ویدیو جدید"
+                        
+                        # پیدا کردن تصویر
+                        img = link.find_element(By.XPATH, "ancestor::*//img | preceding::img")
+                        img_url = img.get_attribute('src') if img else None
+                        
+                        new_posts.append({
+                            'title': title,
+                            'link': url,
+                            'image': img_url
+                        })
+                    except:
+                        pass
+            except Exception as e:
+                print(f"خطا در روش 2: {e}")
+        
+        driver.quit()
+        
+        # حذف آیتم‌های تکراری
+        unique_posts = []
+        seen = set()
+        for post in new_posts:
+            if post['link'] not in seen:
+                seen.add(post['link'])
+                unique_posts.append(post)
+        
+        print(f"{len(unique_posts)} ویدیو پیدا شد.")
+        return unique_posts[:10]
+        
     except Exception as e:
-        print(f"خطا در دریافت صفحه: {e}")
+        print(f"خطا در راه‌اندازی مرورگر: {e}")
         return []
 
-    soup = BeautifulSoup(response.text, 'html.parser')
-    new_posts = []
-    
-    # پیدا کردن ویدیوهای جدید - بر اساس ساختار صفحه
-    video_containers = []
-    
-    # روش 1: جستجوی بخش "Videos Added on"
-    for section_title in soup.find_all(['h2', 'h3', 'h4']):
-        if 'Videos Added on' in section_title.get_text():
-            parent = section_title.find_parent()
-            if parent:
-                # پیدا کردن تمام آیتم‌های ویدیو در این بخش
-                video_containers = parent.find_all(['li', 'div'], recursive=True)
-                break
-    
-    # روش 2: اگر روش 1 موفق نشد، تمام آیتم‌های ویدیو را پیدا کن
-    if not video_containers:
-        # جستجوی آیتم‌هایی که شامل تگ ویدیو یا تصویر هستند
-        video_containers = soup.find_all(['li', 'div'], class_=re.compile(r'(video|item|post|entry)', re.I))
-    
-    # اگر باز هم چیزی پیدا نشد، تمام لینک‌های حاوی /video/ را بررسی کن
-    if not video_containers:
-        all_links = soup.find_all('a', href=True)
-        for link in all_links:
-            href = link.get('href', '')
-            if '/video/' in href or '/watch/' in href or '/view/' in href:
-                # یک المان ساختگی برای این لینک بساز
-                container = soup.new_tag('div')
-                container.append(link)
-                img = link.find('img')
-                if img:
-                    container.append(img)
-                video_containers.append(container)
-    
-    for item in video_containers[:20]:  # بررسی حداکثر 20 آیتم
-        try:
-            # پیدا کردن لینک اصلی
-            link_tag = item.find('a', href=True)
-            if not link_tag:
-                continue
-                
-            post_url = link_tag.get('href')
-            if not post_url:
-                continue
-                
-            # اطمینان از کامل بودن لینک
-            if post_url.startswith('/'):
-                post_url = 'https://aznude.com' + post_url
-            elif not post_url.startswith('http'):
-                post_url = 'https://aznude.com/' + post_url
-            
-            # پیدا کردن تصویر
-            img_tag = item.find('img')
-            img_url = None
-            if img_tag and img_tag.get('src'):
-                img_url = img_tag.get('src')
-                if img_url.startswith('/'):
-                    img_url = 'https://aznude.com' + img_url
-                elif not img_url.startswith('http'):
-                    img_url = 'https://aznude.com/' + img_url
-            
-            # پیدا کردن عنوان
-            title = link_tag.get_text(strip=True)
-            if not title and img_tag and img_tag.get('alt'):
-                title = img_tag.get('alt')
-            if not title:
-                # استخراج عنوان از لینک
-                title_parts = post_url.strip('/').split('/')
-                if title_parts:
-                    title = title_parts[-1].replace('-', ' ').title()
-                else:
-                    title = "ویدیو جدید"
-            
-            # اضافه کردن به لیست
-            new_posts.append({
-                'title': title[:100],  # محدود کردن طول عنوان
-                'link': post_url,
-                'image': img_url
-            })
-            
-        except Exception as e:
-            print(f"خطا در پردازش یک آیتم: {e}")
-            continue
-    
-    # حذف آیتم‌های تکراری
-    unique_posts = []
-    seen_links = set()
-    for post in new_posts:
-        if post['link'] not in seen_links:
-            seen_links.add(post['link'])
-            unique_posts.append(post)
-    
-    return unique_posts[:10]  # فقط ۱۰ مورد اول را برگردان
-
 def send_to_telegram(post):
-    """یک پست را به تلگرام ارسال می‌کند."""
-    caption = f"🎬 {post['title']}\n🔗 {post['link']}"
+    """ارسال پست به تلگرام"""
+    caption = f"{post['title']}\n{post['link']}"
     
-    if post.get('image'):
+    if post.get('image') and post['image'].startswith('http'):
         try:
-            # دانلود و ارسال با عکس
-            img_response = requests.get(post['image'], timeout=15)
-            if img_response.status_code == 200:
-                response = requests.post(
-                    f"{TELEGRAM_API_URL}/sendPhoto",
-                    data={'chat_id': CHAT_ID, 'caption': caption},
-                    files={'photo': ('image.jpg', img_response.content, 'image/jpeg')}
-                )
-                if response.ok:
-                    return
-                else:
-                    print(f"خطا در ارسال عکس: {response.text}")
-            else:
-                print(f"خطا در دانلود عکس: {img_response.status_code}")
+            response = requests.post(
+                f"{TELEGRAM_API_URL}/sendPhoto",
+                data={'chat_id': CHAT_ID, 'caption': caption},
+                files={'photo': requests.get(post['image']).content}
+            )
+            if response.ok:
+                return
         except Exception as e:
             print(f"خطا در ارسال عکس: {e}")
     
-    # در صورت خطا یا نبود عکس، به صورت متن ارسال کن
-    try:
-        response = requests.post(
-            f"{TELEGRAM_API_URL}/sendMessage",
-            data={'chat_id': CHAT_ID, 'text': caption}
-        )
-        if not response.ok:
-            print(f"خطا در ارسال متن: {response.text}")
-    except Exception as e:
-        print(f"خطا در ارسال متن: {e}")
+    # ارسال به صورت متن
+    requests.post(
+        f"{TELEGRAM_API_URL}/sendMessage",
+        data={'chat_id': CHAT_ID, 'text': caption}
+    )
 
 def main():
-    print("شروع اسکرپینگ...")
+    print("شروع اسکرپینگ با Selenium...")
     sent_links = load_sent_links()
     all_posts = get_new_posts()
     
@@ -208,19 +162,16 @@ def main():
         print("هیچ پستی پیدا نشد.")
         return
 
-    # فیلتر کردن پست‌های قبلاً ارسال نشده
     posts_to_send = [p for p in all_posts if p['link'] not in sent_links]
     print(f"{len(posts_to_send)} پست جدید برای ارسال پیدا شد.")
 
-    # ارسال حداکثر ۱۰ پست
-    for idx, post in enumerate(posts_to_send[:10]):
+    for post in posts_to_send[:10]:
         try:
-            print(f"ارسال پست {idx+1}: {post['title']}")
             send_to_telegram(post)
             sent_links.add(post['link'])
-            sleep(3)  # تاخیر ۳ ثانیه‌ای بین ارسال‌ها
+            time.sleep(2)
         except Exception as e:
-            print(f"خطا در ارسال پست {post['link']}: {e}")
+            print(f"خطا در ارسال: {e}")
 
     save_sent_links(sent_links)
     print("پایان کار.")
