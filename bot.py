@@ -2,6 +2,7 @@ import os
 import json
 import time
 import requests
+import yt_dlp
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -33,53 +34,37 @@ def save_sent_links(links):
     with open(SENT_FILE, 'w') as f:
         json.dump(list(links), f)
 
-def get_direct_video_url(page_url):
-    """دریافت لینک مستقیم ویدیو از صفحه با استفاده از تگ video"""
-    print(f"  📄 دریافت ویدیو از: {page_url}")
-    
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
-    
-    service = Service('/usr/bin/chromedriver')
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+def get_direct_video_url_with_ytdlp(page_url):
+    """استخراج لینک مستقیم ویدیو با استفاده از yt-dlp"""
+    print(f"  📄 استخراج ویدیو از: {page_url}")
     
     try:
-        driver.get(page_url)
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'force_generic_extractor': True,
+        }
         
-        # اسکرول برای بارگذاری پخش‌کننده
-        driver.execute_script("window.scrollTo(0, 300);")
-        time.sleep(3)
-        
-        # پیدا کردن تگ video
-        video = driver.find_element(By.TAG_NAME, "video")
-        video_url = video.get_attribute('src')
-        
-        if video_url and video_url.startswith('http'):
-            print(f"  ✅ ویدیو پیدا شد: {video_url}")
-            driver.quit()
-            return video_url
-        
-        # اگر src خالی بود، تگ source رو چک کن
-        source = driver.find_element(By.XPATH, "//video/source")
-        if source:
-            video_url = source.get_attribute('src')
-            if video_url and video_url.startswith('http'):
-                print(f"  ✅ ویدیو از source پیدا شد: {video_url}")
-                driver.quit()
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(page_url, download=False)
+            if info and 'url' in info:
+                video_url = info['url']
+                print(f"  ✅ ویدیو اصلی پیدا شد: {video_url}")
                 return video_url
+            elif info and 'formats' in info and len(info['formats']) > 0:
+                # بهترین کیفیت رو انتخاب کن
+                best_format = max(info['formats'], key=lambda f: f.get('height', 0) or 0)
+                video_url = best_format.get('url')
+                if video_url:
+                    print(f"  ✅ ویدیو اصلی پیدا شد: {video_url}")
+                    return video_url
         
-        driver.quit()
+        print(f"  ⚠️ ویدیویی با yt-dlp پیدا نشد")
         return None
         
     except Exception as e:
-        print(f"  ❌ خطا: {e}")
-        driver.quit()
+        print(f"  ❌ خطا در yt-dlp: {e}")
         return None
 
 def get_new_posts():
@@ -159,7 +144,7 @@ def send_to_telegram(post):
     """ارسال مطلب با ویدیو"""
     print(f"  📤 ارسال: {post['title']}")
     
-    video_url = get_direct_video_url(post['link'])
+    video_url = get_direct_video_url_with_ytdlp(post['link'])
     
     if video_url:
         if send_video_to_telegram(post, video_url):
