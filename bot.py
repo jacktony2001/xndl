@@ -7,6 +7,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
 
 # --- تنظیمات برگرفته از Secrets گیت‌هاب ---
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -31,26 +32,36 @@ def save_sent_links(links):
         json.dump(list(links), f)
 
 def get_new_posts():
-    """استفاده از selenium با کروم دایرکت"""
+    """استفاده از selenium با تنظیمات پیشرفته برای دور زدن تشخیص"""
     print("راه‌اندازی مرورگر...")
     
-    # تنظیمات مرورگر بدون رابط کاربری
     chrome_options = Options()
+    
+    # تنظیمات اصلی headless
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
+    
+    # تنظیمات برای دور زدن تشخیص ربات
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    # کاربر-عامل (User-Agent) واقعی
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
+    
+    # تنظیمات زبان و منطقه
+    chrome_options.add_argument("--lang=en-US")
+    chrome_options.add_argument("--accept-lang=en-US,en;q=0.9")
     
     try:
-        # استفاده از مسیر مستقیم کروم‌درایور
-        from selenium.webdriver.chrome.service import Service
         service = Service('/usr/bin/chromedriver')
         driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        # اجرای کد جاوااسکریپت برای مخفی کردن نشانه‌های ربات
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         print(f"بارگذاری صفحه {SITE_URL}...")
         driver.get(SITE_URL)
@@ -58,54 +69,34 @@ def get_new_posts():
         # منتظر بارگذاری محتوا
         wait = WebDriverWait(driver, 30)
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        time.sleep(8)  # افزایش زمان برای بارگذاری محتوای داینامیک
+        time.sleep(5)
+        
+        # اسکرول کردن برای بارگذاری محتوای داینامیک
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(3)
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(2)
         
         # پیدا کردن ویدیوها
         new_posts = []
         
-        # روش 1: پیدا کردن بخش "Videos Added on"
+        # جستجوی بخش "Videos Added on"
         try:
-            sections = driver.find_elements(By.XPATH, "//*[contains(text(), 'Videos Added on')]")
-            if sections:
-                parent = sections[0].find_element(By.XPATH, "..")
-                video_items = parent.find_elements(By.XPATH, ".//a[contains(@href, '/video/') or contains(@href, '/watch/')]")
-                
-                for item in video_items[:15]:
-                    try:
-                        link = item.get_attribute('href')
-                        title = item.text.strip() or "ویدیو جدید"
-                        
-                        # پیدا کردن تصویر
-                        try:
-                            img = item.find_element(By.XPATH, ".//img | ../img")
-                            img_url = img.get_attribute('src') if img else None
-                        except:
-                            img_url = None
-                        
-                        if link:
-                            new_posts.append({
-                                'title': title,
-                                'link': link,
-                                'image': img_url
-                            })
-                    except Exception as e:
-                        print(f"خطا در استخراج آیتم: {e}")
-        except Exception as e:
-            print(f"خطا در روش 1: {e}")
-        
-        # روش 2: اگر روش اول موفق نشد، همه لینک‌ها را بررسی کن
-        if not new_posts:
-            try:
-                all_links = driver.find_elements(By.TAG_NAME, "a")
-                for link in all_links[:30]:
+            # پیدا کردن با متن
+            elements = driver.find_elements(By.XPATH, "//*[contains(text(), 'Videos Added on')]")
+            if elements:
+                parent = elements[0].find_element(By.XPATH, "..")
+                # پیدا کردن تمام لینک‌های ویدیو در این بخش
+                links = parent.find_elements(By.TAG_NAME, "a")
+                for link in links:
                     try:
                         href = link.get_attribute('href')
-                        if href and ('/video/' in href or '/watch/' in href):
+                        if href and ('/video/' in href or '/watch/' in href or '/view/' in href):
                             title = link.text.strip() or "ویدیو جدید"
                             img_url = None
                             try:
-                                img = link.find_element(By.XPATH, "..//img")
-                                img_url = img.get_attribute('src') if img else None
+                                img = link.find_element(By.XPATH, ".//img")
+                                img_url = img.get_attribute('src')
                             except:
                                 pass
                             
@@ -116,10 +107,40 @@ def get_new_posts():
                             })
                     except:
                         pass
+        except Exception as e:
+            print(f"خطا در روش 1: {e}")
+        
+        # روش دوم: جستجوی مستقیم لینک‌های ویدیو
+        if len(new_posts) < 5:
+            try:
+                all_links = driver.find_elements(By.TAG_NAME, "a")
+                for link in all_links:
+                    try:
+                        href = link.get_attribute('href')
+                        if href and ('/video/' in href or '/watch/' in href):
+                            title = link.text.strip() or "ویدیو جدید"
+                            img_url = None
+                            try:
+                                img = link.find_element(By.XPATH, "..//img")
+                                img_url = img.get_attribute('src')
+                            except:
+                                pass
+                            
+                            # جلوگیری از تکراری
+                            if not any(p['link'] == href for p in new_posts):
+                                new_posts.append({
+                                    'title': title,
+                                    'link': href,
+                                    'image': img_url
+                                })
+                    except:
+                        pass
             except Exception as e:
                 print(f"خطا در روش 2: {e}")
         
         driver.quit()
+        
+        print(f"{len(new_posts)} ویدیو پیدا شد.")
         
         # حذف تکراری‌ها
         unique_posts = []
@@ -129,11 +150,10 @@ def get_new_posts():
                 seen.add(post['link'])
                 unique_posts.append(post)
         
-        print(f"{len(unique_posts)} ویدیو پیدا شد.")
         return unique_posts[:10]
         
     except Exception as e:
-        print(f"خطا در راه‌اندازی مرورگر: {e}")
+        print(f"خطا: {e}")
         return []
 
 def send_to_telegram(post):
@@ -153,7 +173,6 @@ def send_to_telegram(post):
         except Exception as e:
             print(f"خطا در ارسال عکس: {e}")
     
-    # ارسال متن
     try:
         requests.post(
             f"{TELEGRAM_API_URL}/sendMessage",
