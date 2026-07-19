@@ -37,27 +37,26 @@ class AznudeScraper:
             self.driver.quit()
             self.driver = None
 
-    def _is_ad_element(self, element):
-        """Check if an element is inside an ad container"""
+    def _is_advertisement(self, element):
+        """Check if an element or its ancestors are advertisements"""
         try:
+            # Get all classes, IDs, and text up the parent chain
             result = self.driver.execute_script("""
                 var el = arguments[0];
-                var maxDepth = 6;
+                var maxDepth = 5;
                 while (el && maxDepth > 0) {
                     var classes = el.className || '';
                     var id = el.id || '';
                     var text = (el.innerText || '').toLowerCase();
                     var combined = (classes + ' ' + id + ' ' + text).toLowerCase();
-                    if (combined.includes('ad') || 
-                        combined.includes('sponsored') || 
-                        combined.includes('promo') ||
-                        combined.includes('banner') ||
-                        combined.includes('stripchat') ||
-                        combined.includes('ourdream') ||
-                        combined.includes('sexselector') ||
-                        combined.includes('lustgoddess') ||
-                        combined.includes('蓝猫')) {
-                        return true;
+                    
+                    // Check for ad indicators
+                    var adPatterns = ['ad', 'sponsored', 'promo', 'banner', 'stripchat', 
+                                     'ourdream', 'sexselector', 'lustgoddess', '广告', '赞助'];
+                    for (var i = 0; i < adPatterns.length; i++) {
+                        if (combined.includes(adPatterns[i])) {
+                            return true;
+                        }
                     }
                     el = el.parentElement;
                     maxDepth--;
@@ -68,48 +67,20 @@ class AznudeScraper:
         except:
             return False
 
-    def _get_main_content_container(self):
-        """Find the main content container of the page"""
-        # Try common main content selectors
-        selectors = [
-            'main',
-            'article',
-            '.content',
-            '.main-content',
-            '.page-content',
-            '.video-page',
-            '.scene-content',
-            '#content',
-            '#main',
-            '.container'
-        ]
-        
-        for selector in selectors:
-            try:
-                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                for elem in elements:
-                    # Make sure it's not an ad container
-                    if not self._is_ad_element(elem):
-                        # Check if it contains video or is large enough
-                        if len(elem.find_elements(By.TAG_NAME, 'video')) > 0 or \
-                           elem.size['height'] > 200:
-                            return elem
-            except:
-                continue
-        
-        # Fallback: look for the largest non-ad div
+    def _get_page_identifier(self):
+        """Get a unique identifier for the current page (URL or title)"""
         try:
-            all_divs = self.driver.find_elements(By.TAG_NAME, 'div')
-            for div in all_divs:
-                if not self._is_ad_element(div):
-                    if len(div.find_elements(By.TAG_NAME, 'video')) > 0:
-                        return div
+            url = self.driver.current_url
+            # Extract the celeb/movie name from URL
+            match = re.search(r'/view/(celeb|movie)/([^/]+)/?$', url)
+            if match:
+                return match.group(2)  # Return the name part
+            return url
         except:
-            pass
-        
-        return None
+            return None
 
     def get_new_videos(self, url):
+        """Get video links from the recent page"""
         self.start()
         try:
             self.driver.get(url)
@@ -118,8 +89,8 @@ class AznudeScraper:
             )
             time.sleep(3)
 
-            # Find all links that start with /view/celeb/ or /view/movie/
-            all_links = self.driver.find_elements(By.CSS_SELECTOR, 'a[href^="/view/celeb/"], a[href^="/view/movie/"]')
+            # Get ALL links on the page
+            all_links = self.driver.find_elements(By.TAG_NAME, 'a')
             
             video_links = []
             seen_urls = set()
@@ -127,43 +98,40 @@ class AznudeScraper:
             for link in all_links:
                 try:
                     href = link.get_attribute('href')
-                    if not href or href in seen_urls:
+                    if not href:
                         continue
                     
-                    # Skip if link is in ad container
-                    if self._is_ad_element(link):
-                        continue
-                    
-                    seen_urls.add(href)
-                    
-                    # Get title
-                    title = link.text.strip()
-                    if not title:
-                        try:
-                            parent = link.find_element(By.XPATH, '..')
-                            title = parent.text.strip()
-                            title = re.sub(r'\s+', ' ', title)
-                            lines = [l.strip() for l in title.split('\n') if l.strip()]
-                            if lines:
-                                title = lines[0]
-                        except:
-                            title = 'Untitled'
-                    
-                    if not title or title == 'Untitled':
-                        try:
-                            nearby = link.find_element(By.XPATH, './following-sibling::*[1]')
-                            title = nearby.text.strip() or 'Untitled'
-                        except:
-                            pass
-                    
-                    video_links.append({
-                        'url': href,
-                        'title': title[:100]
-                    })
-                    logger.info(f"Found video: {title[:50]}...")
-                    
-                except Exception as e:
-                    logger.debug(f"Error processing link: {e}")
+                    # Check if href contains /view/celeb/ or /view/movie/
+                    if '/view/celeb/' in href or '/view/movie/' in href:
+                        if href in seen_urls:
+                            continue
+                        
+                        # Skip if link is in ad container
+                        if self._is_advertisement(link):
+                            continue
+                        
+                        seen_urls.add(href)
+                        
+                        # Get title
+                        title = link.text.strip()
+                        if not title:
+                            try:
+                                parent = link.find_element(By.XPATH, '..')
+                                title = parent.text.strip()
+                                title = re.sub(r'\s+', ' ', title)
+                                lines = [l.strip() for l in title.split('\n') if l.strip()]
+                                if lines:
+                                    title = lines[0]
+                            except:
+                                title = 'Untitled'
+                        
+                        video_links.append({
+                            'url': href,
+                            'title': title[:100]
+                        })
+                        logger.info(f"Found video: {title[:50]}...")
+                        
+                except Exception:
                     continue
 
             # Remove duplicates
@@ -184,6 +152,7 @@ class AznudeScraper:
             self.stop()
 
     def extract_video_url(self, video_page_url):
+        """Extract the main video URL from a /view/ page"""
         self.start()
         try:
             self.driver.get(video_page_url)
@@ -198,81 +167,172 @@ class AznudeScraper:
             self.driver.execute_script("window.scrollTo(0, 0);")
             time.sleep(2)
 
-            # STEP 1: Find the main content container
-            main_container = self._get_main_content_container()
-            
-            if not main_container:
-                logger.warning(f"Could not find main content container on {video_page_url}")
-                return None
-            
-            # STEP 2: Search for video ONLY inside the main container
+            page_id = self._get_page_identifier()
+            logger.info(f"Extracting video for page: {page_id}")
+
+            # STRATEGY: Find video that's associated with the page content
+            # Approach: Look for video elements that are near the page's main heading/title
             video_url = None
-            
-            # Find all video elements inside the main container
-            videos = main_container.find_elements(By.TAG_NAME, 'video')
-            
-            # Filter out ad videos
-            valid_videos = []
-            for video in videos:
-                if not self._is_ad_element(video):
-                    valid_videos.append(video)
-            
-            # Try to get video URL from valid videos
-            for video in valid_videos:
-                # Check sources first
-                sources = video.find_elements(By.TAG_NAME, 'source')
-                for source in sources:
-                    src = source.get_attribute('src')
-                    if src and self._is_valid_video_url(src):
-                        video_url = src
+
+            # 1. Find the page title/heading
+            title_element = None
+            try:
+                # Look for h1 that contains the celeb/movie name
+                headings = self.driver.find_elements(By.TAG_NAME, 'h1')
+                for h in headings:
+                    if not self._is_advertisement(h):
+                        title_element = h
                         break
-                
-                # Check video src directly
-                if not video_url:
-                    src = video.get_attribute('src')
-                    if src and self._is_valid_video_url(src):
-                        video_url = src
-                
-                if video_url:
-                    break
-            
-            # STEP 3: If no video found in video tags, search for video URLs in the main container
-            if not video_url:
-                # Look for video URLs in any src attributes inside the main container
-                elements = main_container.find_elements(By.XPATH, ".//*[@src]")
-                for elem in elements:
-                    if self._is_ad_element(elem):
-                        continue
+            except:
+                pass
+
+            # 2. Find video elements that are in the same section as the title
+            if title_element:
+                try:
+                    # Get the parent section that contains both the title and video
+                    section = self.driver.execute_script("""
+                        var el = arguments[0];
+                        // Find the nearest section/article/div that contains the title
+                        var parent = el.parentElement;
+                        while (parent && parent.tagName != 'BODY') {
+                            var tag = parent.tagName.toLowerCase();
+                            if (tag === 'section' || tag === 'article' || 
+                                tag === 'main' || tag === 'div') {
+                                // Check if this parent contains a video
+                                var videos = parent.querySelectorAll('video');
+                                if (videos.length > 0) {
+                                    return parent;
+                                }
+                            }
+                            parent = parent.parentElement;
+                        }
+                        return null;
+                    """, title_element)
                     
-                    for attr in ['src', 'data-src', 'data-video', 'data-url']:
-                        try:
-                            src = elem.get_attribute(attr)
-                            if src and self._is_valid_video_url(src):
-                                video_url = src
-                                break
-                        except:
-                            pass
-                    if video_url:
-                        break
-            
-            # STEP 4: Look in scripts inside the main container
+                    if section:
+                        # Find videos in this section
+                        videos = section.find_elements(By.TAG_NAME, 'video')
+                        for video in videos:
+                            if not self._is_advertisement(video):
+                                sources = video.find_elements(By.TAG_NAME, 'source')
+                                for source in sources:
+                                    src = source.get_attribute('src')
+                                    if src and self._is_main_video(src):
+                                        video_url = src
+                                        break
+                                if not video_url:
+                                    src = video.get_attribute('src')
+                                    if src and self._is_main_video(src):
+                                        video_url = src
+                                if video_url:
+                                    break
+                except Exception as e:
+                    logger.debug(f"Error finding video near title: {e}")
+
+            # 3. If not found, look for video in the largest non-ad content area
             if not video_url:
-                scripts = main_container.find_elements(By.TAG_NAME, 'script')
-                for script in scripts:
-                    content = script.get_attribute('innerHTML')
-                    if content:
-                        matches = re.findall(r'https?://[^\s"\']+\.(?:mp4|webm|m3u8)', content)
-                        for match in matches:
-                            if self._is_valid_video_url(match):
-                                video_url = match
-                                break
-                    if video_url:
-                        break
+                try:
+                    # Find the largest content div that's not an ad
+                    content_div = self.driver.execute_script("""
+                        var divs = document.querySelectorAll('div');
+                        var largest = null;
+                        var largestArea = 0;
+                        for (var i = 0; i < divs.length; i++) {
+                            var rect = divs[i].getBoundingClientRect();
+                            var area = rect.width * rect.height;
+                            // Must be large enough and not an ad
+                            if (area > 50000 && area < 1000000) {
+                                var text = (divs[i].innerText || '').toLowerCase();
+                                if (!text.includes('ad') && !text.includes('sponsored') &&
+                                    !text.includes('stripchat') && !text.includes('ourdream')) {
+                                    if (area > largestArea) {
+                                        largest = divs[i];
+                                        largestArea = area;
+                                    }
+                                }
+                            }
+                        }
+                        return largest;
+                    """)
+                    
+                    if content_div:
+                        videos = content_div.find_elements(By.TAG_NAME, 'video')
+                        for video in videos:
+                            if not self._is_advertisement(video):
+                                sources = video.find_elements(By.TAG_NAME, 'source')
+                                for source in sources:
+                                    src = source.get_attribute('src')
+                                    if src and self._is_main_video(src):
+                                        video_url = src
+                                        break
+                                if not video_url:
+                                    src = video.get_attribute('src')
+                                    if src and self._is_main_video(src):
+                                        video_url = src
+                                if video_url:
+                                    break
+                except Exception as e:
+                    logger.debug(f"Error finding video in content area: {e}")
+
+            # 4. Look for video in page source (JSON or script tags)
+            if not video_url:
+                try:
+                    # Look for video URLs in script tags that contain the page identifier
+                    scripts = self.driver.find_elements(By.TAG_NAME, 'script')
+                    for script in scripts:
+                        content = script.get_attribute('innerHTML')
+                        if content and page_id and page_id in content:
+                            # Look for video URLs
+                            matches = re.findall(r'https?://[^\s"\']+\.(?:mp4|webm|m3u8)', content)
+                            for match in matches:
+                                if self._is_main_video(match):
+                                    video_url = match
+                                    break
+                        if video_url:
+                            break
+                except Exception as e:
+                    logger.debug(f"Error finding video in scripts: {e}")
+
+            # 5. Last resort: find any video that's clearly not an ad
+            if not video_url:
+                try:
+                    all_videos = self.driver.find_elements(By.TAG_NAME, 'video')
+                    for video in all_videos:
+                        if not self._is_advertisement(video):
+                            # Check if the video is in the main part of the page
+                            parent_text = self.driver.execute_script("""
+                                var el = arguments[0];
+                                var parent = el.parentElement;
+                                while (parent && parent.tagName != 'BODY') {
+                                    var text = (parent.innerText || '').toLowerCase();
+                                    if (text.includes('ad') || text.includes('sponsored')) {
+                                        return 'ad';
+                                    }
+                                    parent = parent.parentElement;
+                                }
+                                return 'clean';
+                            """, video)
+                            
+                            if parent_text != 'ad':
+                                sources = video.find_elements(By.TAG_NAME, 'source')
+                                for source in sources:
+                                    src = source.get_attribute('src')
+                                    if src and self._is_main_video(src):
+                                        video_url = src
+                                        break
+                                if not video_url:
+                                    src = video.get_attribute('src')
+                                    if src and self._is_main_video(src):
+                                        video_url = src
+                                if video_url:
+                                    break
+                except Exception as e:
+                    logger.debug(f"Error in last resort video search: {e}")
 
             if video_url:
                 logger.info(f"Extracted video URL: {video_url[:100]}...")
             else:
-                logger.warning(f"No valid video found in main content on {video_page_url}")
+                logger.warning(f"No valid video found on {video_page_url}")
 
             return video_url
 
@@ -282,8 +342,8 @@ class AznudeScraper:
         finally:
             self.stop()
 
-    def _is_valid_video_url(self, url):
-        """Check if URL is a valid main video (not an ad)"""
+    def _is_main_video(self, url):
+        """Check if URL is a main video (not an ad or preview)"""
         if not url:
             return False
         
@@ -291,36 +351,23 @@ class AznudeScraper:
         if not any(ext in url.lower() for ext in ['.mp4', '.webm', '.m3u8']):
             return False
         
-        # Skip ad URLs
+        # Skip obvious ad URLs
         ad_patterns = [
-            'ad',
-            'ads',
-            'sponsored',
-            'promo',
-            'preroll',
-            'postroll',
-            'adserver',
-            'adservice',
-            'doubleclick',
-            'googleads',
-            'adnxs',
-            'advertisement',
-            'pre-roll',
-            'banner',
-            'stripchat',
-            'ourdream',
-            'sexselector',
-            'lustgoddess',
-            '蓝猫'
+            'ad', 'ads', 'sponsored', 'promo', 'preroll', 'postroll',
+            'adserver', 'adservice', 'doubleclick', 'googleads', 'adnxs',
+            'stripchat', 'ourdream', 'sexselector', 'lustgoddess', '蓝猫',
+            'banner', 'pre-roll', 'advertisement'
         ]
         
         url_lower = url.lower()
         for pattern in ad_patterns:
             if pattern in url_lower:
+                logger.debug(f"Skipping ad URL: {url}")
                 return False
         
-        # Prefer URLs from main CDN
+        # Prefer bkcdn.net (main CDN)
         if 'bkcdn.net' in url_lower:
             return True
         
+        # Allow other CDNs if they don't match ad patterns
         return True
