@@ -2,8 +2,8 @@ name: Scrape and Send Videos
 
 on:
   schedule:
-    - cron: '0 */3 * * *'  # Every 3 hours
-  workflow_dispatch:  # Manual trigger for testing
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
 
 jobs:
   scrape:
@@ -22,14 +22,22 @@ jobs:
       run: |
         pip install -r requirements.txt
 
-    - name: Set up Chrome
+    - name: Install Chrome and ChromeDriver
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget gnupg
+        sudo apt-get install -y wget unzip
         wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
         echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
         sudo apt-get update
         sudo apt-get install -y google-chrome-stable
+        CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+        CHROME_MAJOR=$(echo $CHROME_VERSION | cut -d. -f1)
+        wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
+        unzip chromedriver-linux64.zip
+        sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+        sudo chmod +x /usr/local/bin/chromedriver
+        which chromedriver
+        chromedriver --version
 
     - name: Run bot
       env:
