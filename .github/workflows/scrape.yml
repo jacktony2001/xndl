@@ -31,13 +31,10 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y google-chrome-stable
         CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
-        CHROME_MAJOR=$(echo $CHROME_VERSION | cut -d. -f1)
         wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
         unzip chromedriver-linux64.zip
         sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
         sudo chmod +x /usr/local/bin/chromedriver
-        which chromedriver
-        chromedriver --version
 
     - name: Run bot
       env:
