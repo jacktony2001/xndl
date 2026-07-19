@@ -1,110 +1,120 @@
+import asyncio
 import os
-import json
-import time
+import logging
+from telegram import Bot
+from telegram.error import TelegramError
+from utils.scraper import AznudeScraper
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, BASE_URL, START_PAGE
 import requests
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
+import time
 
-# --- تنظیمات ---
-BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-if not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("لطفاً TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_ID را در Secrets تنظیم کنید.")
+# Simple state tracking (for GitHub Actions, we store last sent in a file)
+STATE_FILE = 'last_sent.txt'
 
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
-SENT_FILE = "sent_links.json"
-TARGET_URL = "https://www.aznude.com/browse/videos/recent/1.html"
+def get_last_sent():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, 'r') as f:
+            return f.read().strip()
+    return None
 
-def load_sent_links():
+def set_last_sent(url):
+    with open(STATE_FILE, 'w') as f:
+        f.write(url)
+
+async def send_video(bot, chat_id, video_url, title, page_url):
+    """Send video to Telegram"""
     try:
-        with open(SENT_FILE, 'r') as f:
-            return set(json.load(f))
-    except FileNotFoundError:
-        return set()
-    except json.JSONDecodeError:
-        return set()
+        # Download video first (Telegram needs file)
+        response = requests.get(video_url, stream=True, timeout=60)
+        if response.status_code != 200:
+            logger.error(f"Failed to download video: {video_url}")
+            return False
 
-def save_sent_links(links):
-    with open(SENT_FILE, 'w') as f:
-        json.dump(list(links), f)
+        # Generate temp filename
+        filename = f"temp_{int(time.time())}.mp4"
+        with open(filename, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
 
-def debug_get_all_links():
-    """دریافت و نمایش تمام لینک‌های موجود در صفحه به همراه اطلاعات"""
-    print("🔍 شروع دیباگ...")
-    
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
-    
-    try:
-        service = Service('/usr/bin/chromedriver')
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
-        print(f"📄 بارگذاری صفحه: {TARGET_URL}")
-        driver.get(TARGET_URL)
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        time.sleep(5)
-        
-        # پیدا کردن تمام لینک‌ها
-        all_links = driver.find_elements(By.TAG_NAME, "a")
-        
-        print("\n" + "="*80)
-        print("📊 تمام لینک‌های موجود در صفحه:")
-        print("="*80)
-        
-        filtered_links = []
-        for i, link in enumerate(all_links):
-            try:
-                href = link.get_attribute('href')
-                text = link.text.strip()
-                if href:
-                    # فقط لینک‌هایی که مربوط به محتوا هستن
-                    if '/view/celeb/' in href or '/view/movie/' in href or '/azncdn/' in href:
-                        filtered_links.append({
-                            'index': i,
-                            'href': href,
-                            'text': text
-                        })
-                        # چاپ با جزئیات
-                        is_azncdn = "⚠️ تبلیغات" if '/azncdn/' in href else "✅ اصلی"
-                        print(f"[{i}] {is_azncdn}")
-                        print(f"    لینک: {href}")
-                        print(f"    متن: {text[:50] if text else '(بدون متن)'}")
-                        print("-" * 60)
-            except:
-                pass
-        
-        print("="*80)
-        print(f"📊 خلاصه:")
-        print(f"   ✅ لینک‌های اصلی (/view/celeb/ یا /view/movie/): {len([l for l in filtered_links if '/view/' in l['href'] and '/azncdn/' not in l['href']])}")
-        print(f"   ⚠️ لینک‌های تبلیغاتی (/azncdn/): {len([l for l in filtered_links if '/azncdn/' in l['href']])}")
-        print("="*80)
-        
-        # ۱۰ تا از اصلی‌ها رو نشون بده
-        print("\n✅ ۱۰ لینک اصلی اول:")
-        main_links = [l for l in filtered_links if '/view/' in l['href'] and '/azncdn/' not in l['href']]
-        for i, link in enumerate(main_links[:10]):
-            print(f"  {i+1}. {link['href']}")
-        
-        driver.quit()
-        
+        # Send video with caption
+        caption = f"🎬 {title}\n🔗 {page_url}"
+        with open(filename, 'rb') as f:
+            await bot.send_video(
+                chat_id=chat_id,
+                video=f,
+                caption=caption,
+                supports_streaming=True
+            )
+
+        # Clean up
+        os.remove(filename)
+        logger.info(f"Sent video: {title}")
+        return True
+
     except Exception as e:
-        print(f"❌ خطا: {e}")
+        logger.error(f"Error sending video: {e}")
+        return False
 
-def main():
-    print("🚀 شروع دیباگ...")
-    debug_get_all_links()
-    print("\n✅ پایان دیباگ")
+async def main():
+    logger.info("Starting aznude bot...")
+
+    # Initialize bot
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    scraper = AznudeScraper(headless=True)
+
+    # Get recent videos
+    videos = scraper.get_new_videos(START_PAGE)
+    if not videos:
+        logger.info("No videos found")
+        return
+
+    # Check last sent
+    last_sent = get_last_sent()
+    new_videos = []
+
+    for video in videos:
+        if video['url'] == last_sent:
+            break
+        new_videos.append(video)
+
+    # Reverse to send in correct order (oldest first)
+    new_videos.reverse()
+
+    if not new_videos:
+        logger.info("No new videos since last run")
+        return
+
+    logger.info(f"Sending {len(new_videos)} new videos")
+
+    # For each new video, extract and send
+    for video in new_videos:
+        # Extract direct video URL
+        video_url = scraper.extract_video_url(video['url'])
+        if not video_url:
+            logger.warning(f"Could not extract video from {video['url']}")
+            continue
+
+        # Send to Telegram
+        success = await send_video(
+            bot,
+            TELEGRAM_CHAT_ID,
+            video_url,
+            video['title'],
+            video['url']
+        )
+
+        if success:
+            # Update last sent
+            set_last_sent(video['url'])
+
+        # Be nice to Telegram API rate limits
+        await asyncio.sleep(1)
+
+    logger.info("Done!")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
