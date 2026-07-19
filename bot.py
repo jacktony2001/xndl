@@ -47,17 +47,10 @@ def get_new_posts():
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
     try:
-        # نصب کروم و کروم‌درایور با استفاده از ابزارهای گیت‌هاب
-        os.system('wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb')
-        os.system('sudo dpkg -i google-chrome-stable_current_amd64.deb || true')
-        os.system('sudo apt-get -f install -y')
-        os.system('wget -q https://storage.googleapis.com/chrome-for-testing-public/123.0.6312.86/linux64/chromedriver-linux64.zip')
-        os.system('unzip -o chromedriver-linux64.zip')
-        os.system('sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver')
-        os.system('sudo chmod +x /usr/bin/chromedriver')
-        
-        # راه‌اندازی مرورگر
-        driver = webdriver.Chrome(options=chrome_options)
+        # استفاده از مسیر مستقیم کروم‌درایور
+        from selenium.webdriver.chrome.service import Service
+        service = Service('/usr/bin/chromedriver')
+        driver = webdriver.Chrome(service=service, options=chrome_options)
         
         print(f"بارگذاری صفحه {SITE_URL}...")
         driver.get(SITE_URL)
@@ -65,7 +58,7 @@ def get_new_posts():
         # منتظر بارگذاری محتوا
         wait = WebDriverWait(driver, 30)
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        time.sleep(5)
+        time.sleep(8)  # افزایش زمان برای بارگذاری محتوای داینامیک
         
         # پیدا کردن ویدیوها
         new_posts = []
@@ -89,11 +82,12 @@ def get_new_posts():
                         except:
                             img_url = None
                         
-                        new_posts.append({
-                            'title': title,
-                            'link': link,
-                            'image': img_url
-                        })
+                        if link:
+                            new_posts.append({
+                                'title': title,
+                                'link': link,
+                                'image': img_url
+                            })
                     except Exception as e:
                         print(f"خطا در استخراج آیتم: {e}")
         except Exception as e:
@@ -139,7 +133,7 @@ def get_new_posts():
         return unique_posts[:10]
         
     except Exception as e:
-        print(f"خطا: {e}")
+        print(f"خطا در راه‌اندازی مرورگر: {e}")
         return []
 
 def send_to_telegram(post):
