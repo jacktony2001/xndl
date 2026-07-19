@@ -33,57 +33,9 @@ def save_sent_links(links):
     with open(SENT_FILE, 'w') as f:
         json.dump(list(links), f)
 
-def get_direct_video_url_with_selenium(page_url):
-    """دریافت لینک مستقیم ویدیو با Selenium (از تگ video)"""
-    print(f"  📄 دریافت ویدیو از: {page_url}")
-    
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
-    
-    service = Service('/usr/bin/chromedriver')
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    
-    try:
-        driver.get(page_url)
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        
-        # اسکرول برای بارگذاری پخش‌کننده
-        driver.execute_script("window.scrollTo(0, 500);")
-        time.sleep(5)
-        
-        # پیدا کردن تگ video
-        video = driver.find_element(By.TAG_NAME, "video")
-        video_url = video.get_attribute('src')
-        
-        # اگر src خالی بود، تگ source رو چک کن
-        if not video_url or not video_url.startswith('http'):
-            source = driver.find_element(By.XPATH, "//video/source")
-            if source:
-                video_url = source.get_attribute('src')
-        
-        # چک کردن اینکه لینک تبلیغاتی نباشه
-        if video_url and video_url.startswith('http') and 'cdn' in video_url:
-            print(f"  ✅ ویدیو اصلی پیدا شد: {video_url}")
-            driver.quit()
-            return video_url
-        else:
-            print(f"  ⚠️ ویدیو معتبر پیدا نشد")
-            driver.quit()
-            return None
-        
-    except Exception as e:
-        print(f"  ❌ خطا: {e}")
-        driver.quit()
-        return None
-
-def get_new_posts():
-    """دریافت لینک مطالب جدید از صفحه مشخص (فقط لینک‌های اصلی)"""
-    print(f"🔍 اسکرپینگ از: {TARGET_URL}")
+def debug_get_all_links():
+    """دریافت و نمایش تمام لینک‌های موجود در صفحه به همراه اطلاعات"""
+    print("🔍 شروع دیباگ...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -98,109 +50,61 @@ def get_new_posts():
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
+        print(f"📄 بارگذاری صفحه: {TARGET_URL}")
         driver.get(TARGET_URL)
         WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         time.sleep(5)
         
-        new_posts = []
+        # پیدا کردن تمام لینک‌ها
+        all_links = driver.find_elements(By.TAG_NAME, "a")
         
-        # 🔴 تغییر اصلی: فقط لینک‌هایی که به /view/celeb/ یا /view/movie/ ختم میشن
-        links = driver.find_elements(By.XPATH, "//a[contains(@href, '/view/celeb/') or contains(@href, '/view/movie/')]")
+        print("\n" + "="*80)
+        print("📊 تمام لینک‌های موجود در صفحه:")
+        print("="*80)
         
-        for link in links[:20]:  # بیشتر میگیریم تا مطمئن باشیم ۱۰ تا پر میشه
+        filtered_links = []
+        for i, link in enumerate(all_links):
             try:
                 href = link.get_attribute('href')
-                title = link.text.strip() or "مطلب جدید"
-                
-                # 🔴 فیلتر: فقط لینک‌هایی که به /azncdn/ ختم نمیشن (تبلیغات نیستن)
-                if href and '/azncdn/' not in href and not any(p['link'] == href for p in new_posts):
-                    new_posts.append({
-                        'title': title,
-                        'link': href
-                    })
+                text = link.text.strip()
+                if href:
+                    # فقط لینک‌هایی که مربوط به محتوا هستن
+                    if '/view/celeb/' in href or '/view/movie/' in href or '/azncdn/' in href:
+                        filtered_links.append({
+                            'index': i,
+                            'href': href,
+                            'text': text
+                        })
+                        # چاپ با جزئیات
+                        is_azncdn = "⚠️ تبلیغات" if '/azncdn/' in href else "✅ اصلی"
+                        print(f"[{i}] {is_azncdn}")
+                        print(f"    لینک: {href}")
+                        print(f"    متن: {text[:50] if text else '(بدون متن)'}")
+                        print("-" * 60)
             except:
                 pass
         
+        print("="*80)
+        print(f"📊 خلاصه:")
+        print(f"   ✅ لینک‌های اصلی (/view/celeb/ یا /view/movie/): {len([l for l in filtered_links if '/view/' in l['href'] and '/azncdn/' not in l['href']])}")
+        print(f"   ⚠️ لینک‌های تبلیغاتی (/azncdn/): {len([l for l in filtered_links if '/azncdn/' in l['href']])}")
+        print("="*80)
+        
+        # ۱۰ تا از اصلی‌ها رو نشون بده
+        print("\n✅ ۱۰ لینک اصلی اول:")
+        main_links = [l for l in filtered_links if '/view/' in l['href'] and '/azncdn/' not in l['href']]
+        for i, link in enumerate(main_links[:10]):
+            print(f"  {i+1}. {link['href']}")
+        
         driver.quit()
         
-        print(f"  ✅ {len(new_posts)} مطلب اصلی پیدا شد.")
-        return new_posts[:10]
-        
     except Exception as e:
-        print(f"  ❌ خطا: {e}")
-        return []
-
-def send_video_to_telegram(post, video_url):
-    """ارسال ویدیو به تلگرام"""
-    caption = f"{post['title']}\n{post['link']}"
-    
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        response = requests.get(video_url, headers=headers, timeout=60)
-        if response.status_code != 200:
-            return False
-        
-        file_name = f"{post['title']}.mp4"
-        files = {'video': (file_name, response.content, 'video/mp4')}
-        data = {'chat_id': CHAT_ID, 'caption': caption}
-        
-        result = requests.post(f"{TELEGRAM_API_URL}/sendVideo", data=data, files=files, timeout=60)
-        if result.ok:
-            return True
-        else:
-            print(f"  ⚠️ خطا: {result.text}")
-            return False
-            
-    except Exception as e:
-        print(f"  ❌ خطا: {e}")
-        return False
-
-def send_to_telegram(post):
-    """ارسال مطلب با ویدیو"""
-    print(f"  📤 ارسال: {post['title']}")
-    
-    video_url = get_direct_video_url_with_selenium(post['link'])
-    
-    if video_url:
-        if send_video_to_telegram(post, video_url):
-            print(f"  ✅ ویدیو ارسال شد")
-            return
-    
-    try:
-        caption = f"{post['title']}\n{post['link']}"
-        requests.post(
-            f"{TELEGRAM_API_URL}/sendMessage",
-            data={'chat_id': CHAT_ID, 'text': caption}
-        )
-        print(f"  📝 متن ارسال شد")
-    except Exception as e:
-        print(f"  ❌ خطا: {e}")
+        print(f"❌ خطا: {e}")
 
 def main():
-    print("🚀 شروع...")
-    sent_links = load_sent_links()
-    print(f"  📋 {len(sent_links)} لینک قبلا ارسال شده")
-    
-    all_posts = get_new_posts()
-    
-    if not all_posts:
-        print("❌ هیچ مطلبی پیدا نشد")
-        return
-
-    posts_to_send = [p for p in all_posts if p['link'] not in sent_links]
-    print(f"  📨 {len(posts_to_send)} مطلب جدید")
-
-    if not posts_to_send:
-        print("✅ همه قبلا ارسال شدن")
-        return
-
-    for post in posts_to_send[:10]:
-        send_to_telegram(post)
-        sent_links.add(post['link'])
-        time.sleep(3)
-
-    save_sent_links(sent_links)
-    print("✅ پایان")
+    print("🚀 شروع دیباگ...")
+    debug_get_all_links()
+    print("\n✅ پایان دیباگ")
 
 if __name__ == "__main__":
     main()
