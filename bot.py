@@ -2,9 +2,8 @@ import asyncio
 import os
 import logging
 from telegram import Bot
-from telegram.error import TelegramError
 from utils.scraper import AznudeScraper
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, BASE_URL, START_PAGE
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, START_PAGE
 import requests
 import time
 
@@ -60,13 +59,13 @@ async def main():
     logger.info("Starting aznude bot...")
 
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    
     scraper = AznudeScraper(headless=True)
-
-    # Get recent videos
     videos = scraper.get_new_videos(START_PAGE)
+    scraper.stop()
     
     if not videos:
-        logger.info("No videos found - check selectors or site structure")
+        logger.info("No videos found")
         return
 
     last_sent = get_last_sent()
@@ -86,7 +85,10 @@ async def main():
     logger.info(f"Sending {len(new_videos)} new videos")
 
     for video in new_videos:
+        scraper = AznudeScraper(headless=True)
         video_url = scraper.extract_video_url(video['url'])
+        scraper.stop()
+        
         if not video_url:
             logger.warning(f"Could not extract video from {video['url']}")
             continue
