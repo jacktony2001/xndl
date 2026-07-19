@@ -18,8 +18,6 @@ if not BOT_TOKEN or not CHAT_ID:
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 SENT_FILE = "sent_links.json"
-
-# صفحه مشخصی که ربات فقط از اونجا میگیره
 TARGET_URL = "https://www.aznude.com/browse/videos/recent/1.html"
 
 def load_sent_links():
@@ -27,22 +25,65 @@ def load_sent_links():
         with open(SENT_FILE, 'r') as f:
             return set(json.load(f))
     except FileNotFoundError:
-        print("  ℹ️ فایل sent_links.json پیدا نشد، یک مجموعه خالی ایجاد می‌شود.")
         return set()
     except json.JSONDecodeError:
-        print("  ⚠️ فایل sent_links.json خراب است، یک مجموعه خالی ایجاد می‌شود.")
         return set()
 
 def save_sent_links(links):
+    with open(SENT_FILE, 'w') as f:
+        json.dump(list(links), f)
+
+def get_direct_video_url(page_url):
+    """دریافت لینک مستقیم ویدیو از صفحه با استفاده از تگ video"""
+    print(f"  📄 دریافت ویدیو از: {page_url}")
+    
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
+    
+    service = Service('/usr/bin/chromedriver')
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    
     try:
-        with open(SENT_FILE, 'w') as f:
-            json.dump(list(links), f)
-        print(f"  💾 {len(links)} لینک در فایل sent_links.json ذخیره شد.")
+        driver.get(page_url)
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        
+        # اسکرول برای بارگذاری پخش‌کننده
+        driver.execute_script("window.scrollTo(0, 300);")
+        time.sleep(3)
+        
+        # پیدا کردن تگ video
+        video = driver.find_element(By.TAG_NAME, "video")
+        video_url = video.get_attribute('src')
+        
+        if video_url and video_url.startswith('http'):
+            print(f"  ✅ ویدیو پیدا شد: {video_url}")
+            driver.quit()
+            return video_url
+        
+        # اگر src خالی بود، تگ source رو چک کن
+        source = driver.find_element(By.XPATH, "//video/source")
+        if source:
+            video_url = source.get_attribute('src')
+            if video_url and video_url.startswith('http'):
+                print(f"  ✅ ویدیو از source پیدا شد: {video_url}")
+                driver.quit()
+                return video_url
+        
+        driver.quit()
+        return None
+        
     except Exception as e:
-        print(f"  ❌ خطا در ذخیره فایل: {e}")
+        print(f"  ❌ خطا: {e}")
+        driver.quit()
+        return None
 
 def get_new_posts():
-    """دریافت مطالب جدید فقط از صفحه مشخص شده"""
+    """دریافت لینک مطالب جدید از صفحه مشخص"""
     print(f"🔍 اسکرپینگ از: {TARGET_URL}")
     
     chrome_options = Options()
@@ -64,14 +105,14 @@ def get_new_posts():
         
         new_posts = []
         
-        # فقط لینک‌هایی که به /view/celeb/ یا /view/movie/ ختم میشن
+        # پیدا کردن لینک‌های مطالب
         links = driver.find_elements(By.XPATH, "//a[contains(@href, '/view/celeb/') or contains(@href, '/view/movie/')]")
         
         for link in links[:15]:
             try:
                 href = link.get_attribute('href')
                 title = link.text.strip() or "مطلب جدید"
-                if href:
+                if href and not any(p['link'] == href for p in new_posts):
                     new_posts.append({
                         'title': title,
                         'link': href
@@ -81,107 +122,86 @@ def get_new_posts():
         
         driver.quit()
         
-        # حذف تکراری
-        unique_posts = []
-        seen = set()
-        for post in new_posts:
-            if post['link'] not in seen:
-                seen.add(post['link'])
-                unique_posts.append(post)
-        
-        print(f"  ✅ {len(unique_posts)} مطلب پیدا شد.")
-        return unique_posts[:10]
+        print(f"  ✅ {len(new_posts)} مطلب پیدا شد.")
+        return new_posts[:10]
         
     except Exception as e:
         print(f"  ❌ خطا: {e}")
         return []
 
+def send_video_to_telegram(post, video_url):
+    """ارسال ویدیو به تلگرام"""
+    caption = f"{post['title']}\n{post['link']}"
+    
+    try:
+        # دانلود ویدیو
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(video_url, headers=headers, timeout=60)
+        if response.status_code != 200:
+            return False
+        
+        file_name = f"{post['title']}.mp4"
+        files = {'video': (file_name, response.content, 'video/mp4')}
+        data = {'chat_id': CHAT_ID, 'caption': caption}
+        
+        result = requests.post(f"{TELEGRAM_API_URL}/sendVideo", data=data, files=files, timeout=60)
+        if result.ok:
+            return True
+        else:
+            print(f"  ⚠️ خطا: {result.text}")
+            return False
+            
+    except Exception as e:
+        print(f"  ❌ خطا: {e}")
+        return False
+
 def send_to_telegram(post):
-    """ارسال مطلب با لینک به عنوان ویدیو یا عکس"""
+    """ارسال مطلب با ویدیو"""
     print(f"  📤 ارسال: {post['title']}")
     
-    # تلاش برای ارسال به عنوان ویدیو
-    try:
-        response = requests.post(
-            f"{TELEGRAM_API_URL}/sendVideo",
-            data={
-                'chat_id': CHAT_ID,
-                'video': post['link'],
-                'caption': post['title']
-            },
-            timeout=30
-        )
-        if response.ok:
-            print(f"  ✅ ویدیو ارسال شد: {post['link']}")
-            return
-        else:
-            print(f"  ⚠️ ارسال ویدیو失敗: {response.text}")
-    except Exception as e:
-        print(f"  ❌ خطا در ارسال ویدیو: {e}")
+    video_url = get_direct_video_url(post['link'])
     
-    # اگر ویدیو نشد، تلاش برای ارسال به عنوان عکس
-    try:
-        response = requests.post(
-            f"{TELEGRAM_API_URL}/sendPhoto",
-            data={
-                'chat_id': CHAT_ID,
-                'photo': post['link'],
-                'caption': post['title']
-            },
-            timeout=30
-        )
-        if response.ok:
-            print(f"  ✅ عکس ارسال شد: {post['link']}")
+    if video_url:
+        if send_video_to_telegram(post, video_url):
+            print(f"  ✅ ویدیو ارسال شد")
             return
-        else:
-            print(f"  ⚠️ ارسال عکس失敗: {response.text}")
-    except Exception as e:
-        print(f"  ❌ خطا در ارسال عکس: {e}")
     
-    # در صورت شکست، به عنوان متن ارسال کن
+    # در صورت شکست، فقط متن
     try:
         caption = f"{post['title']}\n{post['link']}"
-        response = requests.post(
+        requests.post(
             f"{TELEGRAM_API_URL}/sendMessage",
-            data={'chat_id': CHAT_ID, 'text': caption},
-            timeout=30
+            data={'chat_id': CHAT_ID, 'text': caption}
         )
-        if response.ok:
-            print(f"  📝 متن ارسال شد")
-        else:
-            print(f"  ❌ خطا در ارسال متن: {response.text}")
+        print(f"  📝 متن ارسال شد")
     except Exception as e:
-        print(f"  ❌ خطا در ارسال متن: {e}")
+        print(f"  ❌ خطا: {e}")
 
 def main():
-    print("🚀 شروع اسکرپینگ...")
+    print("🚀 شروع...")
     sent_links = load_sent_links()
-    print(f"  📋 {len(sent_links)} لینک قبلاً ارسال شده است.")
+    print(f"  📋 {len(sent_links)} لینک قبلا ارسال شده")
     
     all_posts = get_new_posts()
     
     if not all_posts:
-        print("❌ هیچ مطلبی پیدا نشد.")
+        print("❌ هیچ مطلبی پیدا نشد")
         return
 
     posts_to_send = [p for p in all_posts if p['link'] not in sent_links]
-    print(f"  📨 {len(posts_to_send)} مطلب جدید برای ارسال پیدا شد.")
-    
+    print(f"  📨 {len(posts_to_send)} مطلب جدید")
+
     if not posts_to_send:
-        print("✅ همه مطالب قبلاً ارسال شده‌اند.")
+        print("✅ همه قبلا ارسال شدن")
         return
 
-    for i, post in enumerate(posts_to_send[:10]):
-        print(f"\n--- ارسال {i+1} از {len(posts_to_send[:10])} ---")
-        try:
-            send_to_telegram(post)
-            sent_links.add(post['link'])
-            time.sleep(3)  # تاخیر ۳ ثانیه‌ای
-        except Exception as e:
-            print(f"  ❌ خطا در ارسال: {e}")
+    for post in posts_to_send[:10]:
+        send_to_telegram(post)
+        sent_links.add(post['link'])
+        time.sleep(3)
 
     save_sent_links(sent_links)
-    print("\n✅ پایان کار.")
+    print("✅ پایان")
 
 if __name__ == "__main__":
     main()
