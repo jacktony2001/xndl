@@ -37,7 +37,6 @@ def save_sent_links(links):
         json.dump(list(links), f)
 
 def init_driver():
-    """راه‌اندازی مرورگر"""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
@@ -55,9 +54,6 @@ def init_driver():
     return driver
 
 def get_video_links_from_list_page():
-    """
-    مرحله ۱: از صفحه لیست، لینک‌های ویدیوها (آدرس‌های /azncdn/...) را بگیر
-    """
     logger.info(f"🔍 اسکرپینگ صفحه لیست: {LIST_PAGE_URL}")
     driver = init_driver()
     video_links = []
@@ -67,29 +63,30 @@ def get_video_links_from_list_page():
         WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         time.sleep(5)
         
-        # پیدا کردن همه لینک‌های ویدیو (آدرس‌هایی که به /azncdn/ ختم میشن)
         all_links = driver.find_elements(By.TAG_NAME, "a")
         
         for link in all_links:
             try:
                 href = link.get_attribute('href')
                 if href and '/azncdn/' in href:
-                    # عنوان رو از تگ <a> یا از تصویر کناری بگیر
                     title = link.text.strip()
                     if not title:
-                        img = link.find_element(By.TAG_NAME, "img")
-                        title = img.get_attribute('alt') or "ویدیو جدید"
+                        try:
+                            img = link.find_element(By.TAG_NAME, "img")
+                            title = img.get_attribute('alt') or "ویدیو جدید"
+                        except:
+                            title = "ویدیو جدید"
                     
                     video_links.append({
                         'title': title,
                         'link': href
                     })
-                    logger.info(f"  ✅ ویدیو پیدا شد: {title}")
+                    logger.info(f"  ✅ ویدیو پیدا شد: {title[:30]}...")
             except:
                 continue
         
         logger.info(f"✅ {len(video_links)} ویدیو در صفحه لیست پیدا شد.")
-        return video_links[:10]  # فقط ۱۰ تای اول
+        return video_links[:10]
         
     except Exception as e:
         logger.error(f"❌ خطا: {e}")
@@ -99,56 +96,28 @@ def get_video_links_from_list_page():
 
 def extract_video_url_from_page(page_url):
     """
-    مرحله ۲: از صفحه ویدیو، لینک مستقیم ویدیو را با استفاده از Network interception استخراج کن
+    استخراج لینک مستقیم ویدیو از دکمه دانلود
     """
     logger.info(f"📄 استخراج ویدیو از: {page_url}")
     driver = init_driver()
     
     try:
-        # فعال‌سازی Performance Logging برای شنود درخواست‌های شبکه
         driver.get(page_url)
         WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        
-        # اسکرول برای بارگذاری پلیر
-        driver.execute_script("window.scrollTo(0, 500);")
         time.sleep(3)
         
-        # کلیک روی دکمه پخش اگر وجود داشت
+        # پیدا کردن دکمه دانلود (تگ a که به mp4 ختم میشه)
         try:
-            play_button = driver.find_element(By.CSS_SELECTOR, ".jw-icon.jw-icon-display, .vjs-big-play-button")
-            driver.execute_script("arguments[0].click();", play_button)
-            logger.info("▶️ کلیک روی دکمه پخش")
+            download_link = driver.find_element(By.CSS_SELECTOR, "a[href$='.mp4']")
+            video_url = download_link.get_attribute('href')
+            if video_url and video_url.startswith('http') and '.mp4' in video_url:
+                logger.info(f"✅ لینک دانلود پیدا شد: {video_url}")
+                driver.quit()
+                return video_url
         except:
-            logger.info("ℹ️ دکمه پخش پیدا نشد")
+            pass
         
-        # منتظر بارگذاری ویدیو و دریافت درخواست mp4
-        video_url = None
-        start_time = time.time()
-        
-        while time.time() - start_time < 15:
-            try:
-                logs = driver.get_log('performance')
-                for log in logs:
-                    try:
-                        import json
-                        log_data = json.loads(log['message'])
-                        message = log_data.get('message', {})
-                        method = message.get('method', '')
-                        
-                        if method == 'Network.responseReceived':
-                            response = message.get('params', {}).get('response', {})
-                            url = response.get('url', '')
-                            if '.mp4' in url and 'cdn' in url:
-                                logger.info(f"🎬 درخواست mp4 پیدا شد: {url}")
-                                driver.quit()
-                                return url
-                    except:
-                        continue
-                time.sleep(0.5)
-            except:
-                time.sleep(0.5)
-        
-        # اگر با Network interception نشد، از تگ video بگیر
+        # اگر دکمه دانلود پیدا نشد، از روش قبلی (تگ video) استفاده کن
         try:
             video = driver.find_element(By.TAG_NAME, "video")
             video_url = video.get_attribute('src')
@@ -164,12 +133,11 @@ def extract_video_url_from_page(page_url):
         return None
         
     except Exception as e:
-        logger.error(f"❌ خطا در استخراج ویدیو: {e}")
+        logger.error(f"❌ خطا: {e}")
         driver.quit()
         return None
 
 def send_video_to_telegram(post, video_url):
-    """ارسال ویدیو به تلگرام"""
     caption = f"{post['title']}\n{post['link']}"
     
     try:
@@ -179,13 +147,13 @@ def send_video_to_telegram(post, video_url):
             logger.warning(f"دانلود ویدیو ناموفق: {response.status_code}")
             return False
         
-        file_name = f"{post['title']}.mp4"
+        file_name = f"{post['title'][:50]}.mp4"
         files = {'video': (file_name, response.content, 'video/mp4')}
         data = {'chat_id': CHAT_ID, 'caption': caption}
         
         result = requests.post(f"{TELEGRAM_API_URL}/sendVideo", data=data, files=files, timeout=60)
         if result.ok:
-            logger.info(f"✅ ویدیو ارسال شد: {post['title']}")
+            logger.info(f"✅ ویدیو ارسال شد: {post['title'][:30]}...")
             return True
         else:
             logger.warning(f"خطای تلگرام: {result.text}")
@@ -195,7 +163,6 @@ def send_video_to_telegram(post, video_url):
         return False
 
 def send_text_to_telegram(post):
-    """ارسال متن در صورت عدم موفقیت در یافتن ویدیو"""
     caption = f"{post['title']}\n{post['link']}"
     try:
         result = requests.post(
@@ -203,7 +170,7 @@ def send_text_to_telegram(post):
             data={'chat_id': CHAT_ID, 'text': caption}
         )
         if result.ok:
-            logger.info(f"📝 متن ارسال شد: {post['title']}")
+            logger.info(f"📝 متن ارسال شد: {post['title'][:30]}...")
             return True
     except Exception as e:
         logger.error(f"خطا در ارسال متن: {e}")
@@ -214,7 +181,6 @@ def main():
     sent_links = load_sent_links()
     logger.info(f"📋 {len(sent_links)} لینک قبلا ارسال شده")
     
-    # مرحله ۱: دریافت لینک‌های ویدیو از صفحه لیست
     all_posts = get_video_links_from_list_page()
     if not all_posts:
         logger.info("❌ هیچ ویدیویی پیدا نشد")
@@ -227,9 +193,8 @@ def main():
         logger.info("✅ همه ویدیوها قبلا ارسال شده‌اند")
         return
     
-    # مرحله ۲: برای هر ویدیو، لینک مستقیم رو استخراج و ارسال کن
     for post in posts_to_send:
-        logger.info(f"📤 پردازش: {post['title']}")
+        logger.info(f"📤 پردازش: {post['title'][:30]}...")
         
         video_url = extract_video_url_from_page(post['link'])
         
@@ -237,11 +202,11 @@ def main():
             if send_video_to_telegram(post, video_url):
                 sent_links.add(post['link'])
         else:
-            logger.warning(f"⚠️ ویدیو برای {post['title']} پیدا نشد")
+            logger.warning(f"⚠️ ویدیو برای {post['title'][:30]}... پیدا نشد")
             if send_text_to_telegram(post):
                 sent_links.add(post['link'])
         
-        time.sleep(3)  # تاخیر بین هر درخواست
+        time.sleep(3)
     
     save_sent_links(sent_links)
     logger.info("✅ پایان کار")
