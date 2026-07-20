@@ -1,12 +1,12 @@
 import time
 import logging
-import json
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import TimeoutException
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,6 @@ class AznudeScraper:
     def __init__(self, headless=True):
         self.headless = headless
         self.driver = None
-        self.video_url = None
 
     def _init_driver(self):
         """راه‌اندازی مرورگر با تنظیمات استاندارد"""
@@ -70,39 +69,36 @@ class AznudeScraper:
 
     def extract_main_video_with_cdp(self, page_url):
         """
-        استخراج ویدیوی اصلی از صفحه فیلم با استفاده از سلکتور دقیق
-        فقط ویدیویی که داخل بخش اصلی فیلم قرار داره رو برمیداره
+        استخراج ویدیوی اصلی با منتظر ماندن برای بارگذاری تگ <video>
         """
         logger.info(f"📄 Extracting video from: {page_url}")
         self.driver = self._init_driver()
         
         try:
             self.driver.get(page_url)
-            WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
             
-            # اسکرول برای بارگذاری کامل
-            self.driver.execute_script("window.scrollTo(0, 500);")
-            time.sleep(5)
-            
-            # پیدا کردن بخش اصلی فیلم (با کلاس یا آیدی مخصوص)
-            main_video_container = None
+            # منتظر بمان تا تگ <video> در صفحه ظاهر شود (حداکثر ۲۰ ثانیه)
             try:
-                main_video_container = self.driver.find_element(By.CSS_SELECTOR, ".single-video-player-container, .player-container, .jwplayer, .video-container")
-            except:
-                try:
-                    play_button = self.driver.find_element(By.CSS_SELECTOR, ".jw-icon.jw-icon-display, .vjs-big-play-button")
-                    main_video_container = play_button.find_element(By.XPATH, "./ancestor::div[contains(@class, 'player') or contains(@class, 'video')]")
-                except:
-                    main_video_container = self.driver.find_element(By.TAG_NAME, "body")
+                video = WebDriverWait(self.driver, 20).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "video"))
+                )
+                logger.info("✅ Video tag found after waiting.")
+            except TimeoutException:
+                logger.warning(f"⚠️ Video tag did not appear within 20 seconds for {page_url}")
+                self.driver.quit()
+                return None
+
+            # اسکرول برای اطمینان از بارگذاری کامل
+            self.driver.execute_script("window.scrollTo(0, 500);")
+            time.sleep(2)
             
-            # پیدا کردن تگ video داخل کانتینر اصلی
-            video = main_video_container.find_element(By.TAG_NAME, "video")
+            # استخراج لینک ویدیو
             video_url = video.get_attribute('src')
             
             # اگر src خالی بود، تگ source رو چک کن
             if not video_url or not video_url.startswith('http'):
                 try:
-                    source = main_video_container.find_element(By.XPATH, ".//video/source")
+                    source = video.find_element(By.TAG_NAME, "source")
                     video_url = source.get_attribute('src')
                 except:
                     pass
