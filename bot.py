@@ -69,13 +69,16 @@ def get_video_links_from_list_page():
             try:
                 href = link.get_attribute('href')
                 if href and '/azncdn/' in href:
-                    title = link.text.strip()
+                    # عنوان رو از تگ img بگیر
+                    title = None
+                    try:
+                        img = link.find_element(By.TAG_NAME, "img")
+                        title = img.get_attribute('alt')
+                    except:
+                        pass
+                    
                     if not title:
-                        try:
-                            img = link.find_element(By.TAG_NAME, "img")
-                            title = img.get_attribute('alt') or "ویدیو جدید"
-                        except:
-                            title = "ویدیو جدید"
+                        title = link.text.strip() or "ویدیو جدید"
                     
                     video_links.append({
                         'title': title,
@@ -94,9 +97,30 @@ def get_video_links_from_list_page():
     finally:
         driver.quit()
 
+def extract_video_title(driver):
+    """گرفتن عنوان کامل از تگ h1 صفحه ویدیو"""
+    try:
+        # روش 1: از تگ h1 با کلاس single-video-title
+        h1 = driver.find_element(By.CSS_SELECTOR, "h1.single-video-title")
+        full_title = h1.text.strip()
+        if full_title:
+            return full_title
+    except:
+        pass
+    
+    try:
+        # روش 2: از تگ title
+        title = driver.title
+        if title:
+            return title
+    except:
+        pass
+    
+    return None
+
 def extract_video_url_from_page(page_url):
     """
-    استخراج لینک مستقیم ویدیو از دکمه دانلود
+    استخراج لینک مستقیم ویدیو و عنوان از صفحه ویدیو
     """
     logger.info(f"📄 استخراج ویدیو از: {page_url}")
     driver = init_driver()
@@ -106,14 +130,21 @@ def extract_video_url_from_page(page_url):
         WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         time.sleep(3)
         
+        # گرفتن عنوان از صفحه
+        video_title = extract_video_title(driver)
+        if video_title:
+            logger.info(f"  📌 عنوان: {video_title[:50]}...")
+        else:
+            logger.info(f"  📌 عنوانی پیدا نشد، از عنوان قبلی استفاده می‌شود.")
+        
         # پیدا کردن دکمه دانلود (تگ a که به mp4 ختم میشه)
         try:
             download_link = driver.find_element(By.CSS_SELECTOR, "a[href$='.mp4']")
             video_url = download_link.get_attribute('href')
             if video_url and video_url.startswith('http') and '.mp4' in video_url:
-                logger.info(f"✅ لینک دانلود پیدا شد: {video_url}")
+                logger.info(f"✅ لینک دانلود پیدا شد: {video_url[:60]}...")
                 driver.quit()
-                return video_url
+                return video_url, video_title
         except:
             pass
         
@@ -122,20 +153,20 @@ def extract_video_url_from_page(page_url):
             video = driver.find_element(By.TAG_NAME, "video")
             video_url = video.get_attribute('src')
             if video_url and video_url.startswith('http'):
-                logger.info(f"✅ ویدیو از تگ video پیدا شد: {video_url}")
+                logger.info(f"✅ ویدیو از تگ video پیدا شد: {video_url[:60]}...")
                 driver.quit()
-                return video_url
+                return video_url, video_title
         except:
             pass
         
         logger.warning(f"⚠️ ویدیو در {page_url} پیدا نشد")
         driver.quit()
-        return None
+        return None, None
         
     except Exception as e:
         logger.error(f"❌ خطا: {e}")
         driver.quit()
-        return None
+        return None, None
 
 def send_video_to_telegram(post, video_url):
     caption = f"{post['title']}\n{post['link']}"
@@ -147,7 +178,10 @@ def send_video_to_telegram(post, video_url):
             logger.warning(f"دانلود ویدیو ناموفق: {response.status_code}")
             return False
         
-        file_name = f"{post['title'][:50]}.mp4"
+        # نام فایل رو از عنوان میگیریم
+        safe_title = post['title'].replace('/', '_').replace('\\', '_')[:50]
+        file_name = f"{safe_title}.mp4"
+        
         files = {'video': (file_name, response.content, 'video/mp4')}
         data = {'chat_id': CHAT_ID, 'caption': caption}
         
@@ -196,9 +230,14 @@ def main():
     for post in posts_to_send:
         logger.info(f"📤 پردازش: {post['title'][:30]}...")
         
-        video_url = extract_video_url_from_page(post['link'])
+        video_url, video_title = extract_video_url_from_page(post['link'])
         
         if video_url:
+            # اگر عنوان جدید پیدا شد، جایگزین کن
+            if video_title:
+                post['title'] = video_title
+                logger.info(f"  🏷️ عنوان به‌روز شد: {post['title'][:50]}...")
+            
             if send_video_to_telegram(post, video_url):
                 sent_links.add(post['link'])
         else:
