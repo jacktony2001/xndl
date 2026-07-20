@@ -10,7 +10,7 @@ from selenium.webdriver.chrome.service import Service
 
 logger = logging.getLogger(__name__)
 
-class VideoScraper:
+class AznudeScraper:
     def __init__(self, headless=True):
         self.headless = headless
         self.driver = None
@@ -43,7 +43,6 @@ class VideoScraper:
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
-                # دریافت لاگ‌های عملکرد (performance)
                 logs = driver.get_log('performance')
                 for log in logs:
                     try:
@@ -51,12 +50,10 @@ class VideoScraper:
                         message = log_data.get('message', {})
                         method = message.get('method', '')
                         
-                        # بررسی درخواست‌های شبکه
                         if method == 'Network.responseReceived':
                             response = message.get('params', {}).get('response', {})
                             url = response.get('url', '')
                             
-                            # اگر درخواست به فایل mp4 بود
                             if '.mp4' in url and 'cdn' in url:
                                 logger.info(f"🎬 MP4 request detected: {url}")
                                 return url
@@ -114,15 +111,13 @@ class VideoScraper:
         self.driver = self._init_driver_with_cdp()
         
         try:
-            # بارگذاری صفحه
             self.driver.get(page_url)
             WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
             
-            # اسکرول برای فعال‌سازی پخش‌کننده
             self.driver.execute_script("window.scrollTo(0, 500);")
             time.sleep(3)
             
-            # کلیک روی پخش‌کننده برای شروع بارگذاری ویدیو (اگر نیاز باشد)
+            # کلیک روی دکمه پخش اگر وجود داشت
             try:
                 play_button = self.driver.find_element(By.CSS_SELECTOR, ".jw-icon.jw-icon-display, .jw-svg-icon-play, .vjs-big-play-button")
                 self.driver.execute_script("arguments[0].click();", play_button)
@@ -130,7 +125,6 @@ class VideoScraper:
             except:
                 logger.info("ℹ️ No play button found or already playing")
             
-            # شنود درخواست‌های شبکه برای پیدا کردن mp4
             logger.info("🎧 Listening for MP4 requests...")
             video_url = self._listen_for_mp4(self.driver, timeout=15)
             
