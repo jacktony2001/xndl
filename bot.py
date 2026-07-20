@@ -1,112 +1,126 @@
-import asyncio
 import os
-import logging
-from telegram import Bot
-from utils.scraper import AznudeScraper
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, START_PAGE
-import requests
+import json
 import time
+import logging
+import requests
+from utils.scraper import AznudeScraper
 
-logging.basicConfig(level=logging.INFO)
+# --- تنظیمات لاگ ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-STATE_FILE = 'last_sent.txt'
+# --- تنظیمات ---
+BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
-def get_last_sent():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r') as f:
-            return f.read().strip()
-    return None
+if not BOT_TOKEN or not CHAT_ID:
+    raise ValueError("لطفاً TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_ID را در Secrets تنظیم کنید.")
 
-def set_last_sent(url):
-    with open(STATE_FILE, 'w') as f:
-        f.write(url)
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+SENT_FILE = "sent_links.json"
+TARGET_URL = "https://www.aznude.com/browse/videos/recent/1.html"
 
-async def send_video(bot, chat_id, video_url, title, page_url):
+def load_sent_links():
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(video_url, stream=True, timeout=60, headers=headers)
+        with open(SENT_FILE, 'r') as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+    except json.JSONDecodeError:
+        return set()
+
+def save_sent_links(links):
+    with open(SENT_FILE, 'w') as f:
+        json.dump(list(links), f)
+
+def send_video_to_telegram(post, video_url):
+    """ارسال ویدیو به تلگرام"""
+    caption = f"{post['title']}\n{post['link']}"
+    
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(video_url, headers=headers, timeout=60)
         if response.status_code != 200:
-            logger.error(f"Failed to download video: {video_url} (status: {response.status_code})")
+            logger.warning(f"Failed to download video: {response.status_code}")
             return False
-
-        filename = f"temp_{int(time.time())}.mp4"
-        with open(filename, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-
-        caption = f"🎬 {title}\n🔗 {page_url}"
-        with open(filename, 'rb') as f:
-            await bot.send_video(
-                chat_id=chat_id,
-                video=f,
-                caption=caption,
-                supports_streaming=True
-            )
-
-        os.remove(filename)
-        logger.info(f"Sent video: {title}")
-        return True
-
+        
+        file_name = f"{post['title']}.mp4"
+        files = {'video': (file_name, response.content, 'video/mp4')}
+        data = {'chat_id': CHAT_ID, 'caption': caption}
+        
+        result = requests.post(f"{TELEGRAM_API_URL}/sendVideo", data=data, files=files, timeout=60)
+        if result.ok:
+            logger.info(f"✅ Sent video: {post['title']}")
+            return True
+        else:
+            logger.warning(f"Telegram error: {result.text}")
+            return False
+            
     except Exception as e:
         logger.error(f"Error sending video: {e}")
         return False
 
-async def main():
-    logger.info("Starting aznude bot...")
-
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    
-    scraper = AznudeScraper(headless=True)
-    videos = scraper.get_new_videos(START_PAGE)
-    scraper.stop()
-    
-    if not videos:
-        logger.info("No videos found")
-        return
-
-    last_sent = get_last_sent()
-    new_videos = []
-
-    for video in videos:
-        if video['url'] == last_sent:
-            break
-        new_videos.append(video)
-
-    new_videos.reverse()
-
-    if not new_videos:
-        logger.info("No new videos since last run")
-        return
-
-    logger.info(f"Sending {len(new_videos)} new videos")
-
-    for video in new_videos:
-        scraper = AznudeScraper(headless=True)
-        video_url = scraper.extract_video_url(video['url'])
-        scraper.stop()
-        
-        if not video_url:
-            logger.warning(f"Could not extract video from {video['url']}")
-            continue
-
-        success = await send_video(
-            bot,
-            TELEGRAM_CHAT_ID,
-            video_url,
-            video['title'],
-            video['url']
+def send_text_to_telegram(post):
+    """ارسال متن به تلگرام (در صورت عدم موفقیت در یافتن ویدیو)"""
+    caption = f"{post['title']}\n{post['link']}"
+    try:
+        result = requests.post(
+            f"{TELEGRAM_API_URL}/sendMessage",
+            data={'chat_id': CHAT_ID, 'text': caption}
         )
+        if result.ok:
+            logger.info(f"📝 Sent text for: {post['title']}")
+            return True
+        else:
+            logger.warning(f"Telegram error: {result.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Error sending text: {e}")
+        return False
 
-        if success:
-            set_last_sent(video['url'])
+def main():
+    logger.info("🚀 Starting bot...")
+    
+    sent_links = load_sent_links()
+    logger.info(f"📋 {len(sent_links)} links already sent")
+    
+    scraper = AznudeScraper()
+    
+    # مرحله ۱: دریافت لینک‌های جدید از صفحه لیست
+    all_posts = scraper.get_list_page_links(TARGET_URL)
+    
+    if not all_posts:
+        logger.info("❌ No new posts found")
+        return
 
-        await asyncio.sleep(1)
+    # فیلتر کردن لینک‌های قبلاً ارسال شده
+    posts_to_send = [p for p in all_posts if p['link'] not in sent_links]
+    logger.info(f"📨 {len(posts_to_send)} new videos to send")
 
-    logger.info("Done!")
+    if not posts_to_send:
+        logger.info("✅ All videos already sent")
+        return
+
+    # مرحله ۲: برای هر لینک، ویدیو را استخراج و ارسال کن
+    for post in posts_to_send[:10]:
+        logger.info(f"📤 Processing: {post['title']}")
+        
+        # استخراج ویدیو با CDP
+        video_url = scraper.extract_main_video_with_cdp(post['link'])
+        
+        if video_url:
+            if send_video_to_telegram(post, video_url):
+                sent_links.add(post['link'])
+        else:
+            # اگر ویدیو پیدا نشد، فقط متن ارسال کن
+            logger.warning(f"⚠️ Could not extract video from {post['link']}")
+            if send_text_to_telegram(post):
+                sent_links.add(post['link'])
+        
+        time.sleep(3)  # تاخیر بین هر درخواست
+
+    save_sent_links(sent_links)
+    logger.info("✅ Done!")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
