@@ -16,8 +16,8 @@ class AznudeScraper:
         self.driver = None
         self.video_url = None
 
-    def _init_driver_with_cdp(self):
-        """راه‌اندازی مرورگر با فعال‌سازی CDP برای مانیتورینگ شبکه"""
+    def _init_driver(self):
+        """راه‌اندازی مرورگر با تنظیمات استاندارد"""
         chrome_options = Options()
         if self.headless:
             chrome_options.add_argument("--headless")
@@ -30,49 +30,15 @@ class AznudeScraper:
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
-        # فعال‌سازی logging برای دریافت درخواست‌های شبکه
-        chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
-
         service = Service('/usr/bin/chromedriver')
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         return driver
 
-    def _listen_for_mp4(self, driver, timeout=15):
-        """شنود درخواست‌های شبکه و پیدا کردن اولین فایل mp4"""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            try:
-                logs = driver.get_log('performance')
-                for log in logs:
-                    try:
-                        log_data = json.loads(log['message'])
-                        message = log_data.get('message', {})
-                        method = message.get('method', '')
-                        
-                        if method == 'Network.responseReceived':
-                            response = message.get('params', {}).get('response', {})
-                            url = response.get('url', '')
-                            
-                            if '.mp4' in url and 'cdn' in url:
-                                logger.info(f"🎬 MP4 request detected: {url}")
-                                return url
-                    except json.JSONDecodeError:
-                        continue
-                    except Exception as e:
-                        logger.debug(f"Error parsing log: {e}")
-                        continue
-                time.sleep(0.5)
-            except Exception as e:
-                logger.debug(f"Error getting logs: {e}")
-                time.sleep(0.5)
-        
-        return None
-
     def get_list_page_links(self, url):
         """دریافت لینک‌های صفحه لیست (فقط /view/celeb/ یا /view/movie/)"""
         logger.info(f"🔍 Scanning list page: {url}")
-        self.driver = self._init_driver_with_cdp()
+        self.driver = self._init_driver()
         links = []
         try:
             self.driver.get(url)
@@ -102,43 +68,61 @@ class AznudeScraper:
             if self.driver:
                 self.driver.quit()
 
-    def extract_main_video_with_cdp(self, page_url):
+    def extract_main_video(self, page_url):
         """
-        استخراج ویدیوی اصلی با استفاده از CDP و شنود درخواست‌های شبکه
-        اولین فایل mp4 که مرورگر درخواست می‌کند، ویدیوی اصلی است
+        استخراج ویدیوی اصلی از صفحه فیلم با استفاده از سلکتور دقیق
+        فقط ویدیویی که داخل بخش اصلی فیلم قرار داره رو برمیداره
         """
         logger.info(f"📄 Extracting video from: {page_url}")
-        self.driver = self._init_driver_with_cdp()
+        self.driver = self._init_driver()
         
         try:
             self.driver.get(page_url)
             WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
             
+            # اسکرول برای بارگذاری کامل
             self.driver.execute_script("window.scrollTo(0, 500);")
-            time.sleep(3)
+            time.sleep(5)
             
-            # کلیک روی دکمه پخش اگر وجود داشت
+            # پیدا کردن بخش اصلی فیلم (با کلاس یا آیدی مخصوص)
+            # معمولاً بخش اصلی فیلم در یک div با کلاس video-container یا player-container قرار داره
+            main_video_container = None
             try:
-                play_button = self.driver.find_element(By.CSS_SELECTOR, ".jw-icon.jw-icon-display, .jw-svg-icon-play, .vjs-big-play-button")
-                self.driver.execute_script("arguments[0].click();", play_button)
-                logger.info("▶️ Clicked on play button")
+                # روش ۱: جستجوی کانتینر اصلی فیلم
+                main_video_container = self.driver.find_element(By.CSS_SELECTOR, ".single-video-player-container, .player-container, .jwplayer, .video-container")
             except:
-                logger.info("ℹ️ No play button found or already playing")
+                try:
+                    # روش ۲: جستجوی دکمه پخش که فقط در بخش اصلی وجود داره
+                    play_button = self.driver.find_element(By.CSS_SELECTOR, ".jw-icon.jw-icon-display, .vjs-big-play-button")
+                    main_video_container = play_button.find_element(By.XPATH, "./ancestor::div[contains(@class, 'player') or contains(@class, 'video')]")
+                except:
+                    # روش ۳: اگر هیچ کدوم پیدا نشد، کل صفحه رو در نظر بگیر
+                    main_video_container = self.driver.find_element(By.TAG_NAME, "body")
             
-            logger.info("🎧 Listening for MP4 requests...")
-            video_url = self._listen_for_mp4(self.driver, timeout=15)
+            # پیدا کردن تگ video داخل کانتینر اصلی
+            video = main_video_container.find_element(By.TAG_NAME, "video")
+            video_url = video.get_attribute('src')
             
-            if video_url:
+            # اگر src خالی بود، تگ source رو چک کن
+            if not video_url or not video_url.startswith('http'):
+                try:
+                    source = main_video_container.find_element(By.XPATH, ".//video/source")
+                    video_url = source.get_attribute('src')
+                except:
+                    pass
+            
+            # اعتبارسنجی نهایی
+            if video_url and video_url.startswith('http') and ('cdn' in video_url or '.mp4' in video_url):
                 logger.info(f"✅ Main video found: {video_url[:80]}...")
                 self.driver.quit()
                 return video_url
             else:
-                logger.warning(f"⚠️ No MP4 request detected for {page_url}")
+                logger.warning(f"⚠️ No valid video found in main container for {page_url}")
                 self.driver.quit()
                 return None
 
         except Exception as e:
-            logger.error(f"❌ Error in extract_main_video_with_cdp: {e}")
+            logger.error(f"❌ Error in extract_main_video: {e}")
             if self.driver:
                 self.driver.quit()
             return None
