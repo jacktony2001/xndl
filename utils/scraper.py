@@ -262,7 +262,27 @@ class AznudeScraper:
             
             for idx, video in enumerate(all_videos):
                 logger.info(f"--- Candidate Video #{idx+1} ---")
-                
+
+                # ❌ رد کردن ویدیوهای widget کناری (پیشنهادی از صفحات دیگه)
+                is_widget = self.driver.execute_script("""
+                    var el = arguments[0];
+                    var parent = el.parentElement;
+                    var depth = 0;
+                    while (parent && depth < 6) {
+                        var classes = (parent.className || '').toLowerCase();
+                        if (classes.includes('exo-native-widget') ||
+                            classes.includes('video-thumb-wrapper')) {
+                            return true;
+                        }
+                        parent = parent.parentElement;
+                        depth++;
+                    }
+                    return false;
+                """, video)
+                if is_widget:
+                    logger.info(f"  ⏭️ Skip: ویدیوی widget کناری (exo-native-widget / video-thumb-wrapper)")
+                    continue
+
                 # Get element info
                 element_info = self.driver.execute_script("""
                     var el = arguments[0];
